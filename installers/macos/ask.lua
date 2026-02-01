@@ -5057,6 +5057,70 @@ end
 -- DNS Analytics Module for IP Addresses
 -------------------------------------------------
 
+-- Execute command silently on Windows (suppress command window)
+local function execute_silent(cmd)
+    local is_windows = package.config:sub(1,1) == "\\"
+    
+    if is_windows then
+        -- On Windows, use VBScript to run command completely silently (no window flash)
+        local temp_out = os.tmpname() .. ".txt"
+        local temp_vbs = os.tmpname() .. ".vbs"
+        
+        -- Escape quotes in command for VBScript (double them)
+        local escaped_cmd = cmd:gsub('"', '""')
+        
+        -- Create VBScript that runs command silently (window style 0 = hidden)
+        local vbs_content = string.format([[
+Set WshShell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+WshShell.Run "cmd /c %s > ""%s"" 2>&1", 0, True
+Set f = fso.OpenTextFile("%s", 1)
+If Not f.AtEndOfStream Then
+    WScript.StdOut.Write f.ReadAll
+End If
+f.Close
+fso.DeleteFile "%s"
+]], escaped_cmd, temp_out, temp_out, temp_out)
+        
+        local vbs_file = io.open(temp_vbs, "w")
+        if vbs_file then
+            vbs_file:write(vbs_content)
+            vbs_file:close()
+            
+            -- Execute VBScript (runs silently, //nologo suppresses VBScript banner)
+            local handle = io.popen(string.format('cscript //nologo "%s"', temp_vbs))
+            local output = ""
+            if handle then
+                output = handle:read("*a") or ""
+                handle:close()
+            end
+            
+            -- Clean up VBScript file
+            os.remove(temp_vbs)
+            
+            return output
+        end
+        
+        -- Fallback: use io.popen if VBScript creation fails
+        local handle = io.popen(cmd .. " 2>&1")
+        if handle then
+            local result = handle:read("*a") or ""
+            handle:close()
+            return result
+        end
+        return ""
+    else
+        -- On Unix-like systems, use io.popen normally
+        local handle = io.popen(cmd .. " 2>&1")
+        if handle then
+            local result = handle:read("*a") or ""
+            handle:close()
+            return result
+        end
+        return ""
+    end
+end
+
 -- Check which DNS tool is available (dig preferred, nslookup as fallback)
 local function check_dns_tool_available()
     local is_windows = package.config:sub(1,1) == "\\"
@@ -5065,22 +5129,14 @@ local function check_dns_tool_available()
     
     -- Check for dig
     if is_windows then
-        local dig_check = io.popen("where dig.exe 2>&1")
-        if dig_check then
-            local dig_result = dig_check:read("*a")
-            dig_check:close()
-            if dig_result and dig_result ~= "" and not string.find(dig_result:lower(), "not found") and not string.find(dig_result:lower(), "could not find") then
-                dig_available = true
-            end
+        local dig_result = execute_silent("where dig.exe 2>&1")
+        if dig_result and dig_result ~= "" and not string.find(dig_result:lower(), "not found") and not string.find(dig_result:lower(), "could not find") then
+            dig_available = true
         end
         if not dig_available then
-            local dig_check2 = io.popen("where dig 2>&1")
-            if dig_check2 then
-                local dig_result2 = dig_check2:read("*a")
-                dig_check2:close()
-                if dig_result2 and dig_result2 ~= "" and not string.find(dig_result2:lower(), "not found") and not string.find(dig_result2:lower(), "could not find") then
-                    dig_available = true
-                end
+            dig_result = execute_silent("where dig 2>&1")
+            if dig_result and dig_result ~= "" and not string.find(dig_result:lower(), "not found") and not string.find(dig_result:lower(), "could not find") then
+                dig_available = true
             end
         end
     else
@@ -5096,22 +5152,14 @@ local function check_dns_tool_available()
     
     -- Check for nslookup (especially useful on Windows)
     if is_windows then
-        local nslookup_check = io.popen("where nslookup.exe 2>&1")
-        if nslookup_check then
-            local nslookup_result = nslookup_check:read("*a")
-            nslookup_check:close()
-            if nslookup_result and nslookup_result ~= "" and not string.find(nslookup_result:lower(), "not found") and not string.find(nslookup_result:lower(), "could not find") then
-                nslookup_available = true
-            end
+        local nslookup_result = execute_silent("where nslookup.exe 2>&1")
+        if nslookup_result and nslookup_result ~= "" and not string.find(nslookup_result:lower(), "not found") and not string.find(nslookup_result:lower(), "could not find") then
+            nslookup_available = true
         end
         if not nslookup_available then
-            local nslookup_check2 = io.popen("where nslookup 2>&1")
-            if nslookup_check2 then
-                local nslookup_result2 = nslookup_check2:read("*a")
-                nslookup_check2:close()
-                if nslookup_result2 and nslookup_result2 ~= "" and not string.find(nslookup_result2:lower(), "not found") and not string.find(nslookup_result2:lower(), "could not find") then
-                    nslookup_available = true
-                end
+            nslookup_result = execute_silent("where nslookup 2>&1")
+            if nslookup_result and nslookup_result ~= "" and not string.find(nslookup_result:lower(), "not found") and not string.find(nslookup_result:lower(), "could not find") then
+                nslookup_available = true
             end
         end
     else
@@ -5270,13 +5318,11 @@ local function reverse_dns_lookup(ip)
     log_message("Using tool: " .. (use_nslookup and "nslookup" or "dig"))
     log_message("Command: " .. cmd)
     
-    local handle = io.popen(cmd)
-    if not handle then
+    -- Use silent execution on Windows to suppress command windows
+    local output = execute_silent(cmd)
+    if not output then
         return nil, "Failed to execute DNS lookup command."
     end
-    
-    local output = handle:read("*a")
-    handle:close()
     
     -- Check for common error messages
     if output and (string.find(output:lower(), "not recognized") or 
@@ -5366,13 +5412,11 @@ local function dns_lookup(domain, record_type)
     log_message("DNS lookup: " .. record_type .. " record for " .. domain)
     log_message("Using tool: " .. (use_nslookup and "nslookup" or "dig"))
     
-    local handle = io.popen(cmd)
-    if not handle then
+    -- Use silent execution on Windows to suppress command windows
+    local output = execute_silent(cmd)
+    if not output then
         return nil, "Failed to execute DNS lookup command"
     end
-    
-    local output = handle:read("*a")
-    handle:close()
     
     -- Check for common error messages
     if output and (string.find(output:lower(), "not recognized") or 
