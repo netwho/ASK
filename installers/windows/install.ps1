@@ -335,30 +335,35 @@ Write-Host "============================================================" -Foreg
 $hasDownloadTool = $false
 $downloadTool = ""
 
-# Check for curl (Windows 10+ usually has it)
-$curl = Get-Command curl -ErrorAction SilentlyContinue
-if ($curl) {
-    $hasDownloadTool = $true
-    $downloadTool = "curl"
-} elseif (Get-Command Invoke-WebRequest -ErrorAction SilentlyContinue) {
-    # PowerShell's Invoke-WebRequest is always available
+# Check for download tools
+# Note: On Windows, 'curl' is often a PowerShell alias for Invoke-WebRequest
+# which doesn't support Unix curl flags, so we'll use Invoke-WebRequest directly
+if (Get-Command Invoke-WebRequest -ErrorAction SilentlyContinue) {
+    # PowerShell's Invoke-WebRequest is always available on Windows
     $hasDownloadTool = $true
     $downloadTool = "Invoke-WebRequest"
+} elseif (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+    # Check for actual curl.exe (not the PowerShell alias)
+    $hasDownloadTool = $true
+    $downloadTool = "curl.exe"
 }
 
 if ($hasDownloadTool) {
     Write-Host "The JSON library significantly improves parsing performance for:" -ForegroundColor Cyan
-    Write-Host "  • urlscan.io search results" -ForegroundColor Cyan
-    Write-Host "  • Complex JSON responses from all APIs" -ForegroundColor Cyan
-    Write-Host "  • Nested arrays and objects" -ForegroundColor Cyan
+    Write-Host "  - urlscan.io search results" -ForegroundColor Cyan
+    Write-Host "  - Complex JSON responses from all APIs" -ForegroundColor Cyan
+    Write-Host "  - Nested arrays and objects" -ForegroundColor Cyan
     Write-Host ""
     $installJson = Read-Host "Install JSON library? (y/n)"
     if ($installJson -eq "y" -or $installJson -eq "Y") {
         $jsonUrl = "https://raw.githubusercontent.com/rxi/json.lua/master/json.lua"
         $jsonDest = Join-Path $PLUGINS_DIR "json.lua"
         try {
-            if ($downloadTool -eq "curl") {
-                & curl -sSL $jsonUrl -o $jsonDest
+            if ($downloadTool -eq "Invoke-WebRequest") {
+                Invoke-WebRequest -Uri $jsonUrl -OutFile $jsonDest -UseBasicParsing
+            } elseif ($downloadTool -eq "curl.exe") {
+                # Use curl.exe with Windows-compatible flags
+                & curl.exe -L -o $jsonDest $jsonUrl
             } else {
                 Invoke-WebRequest -Uri $jsonUrl -OutFile $jsonDest -UseBasicParsing
             }
