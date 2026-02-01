@@ -55,6 +55,7 @@ function Extract-Version {
 }
 
 # Check for existing installation and offer upgrade
+$skipAskInstall = $false
 if (Test-Path $pluginDest) {
     $installedVersion = Extract-Version -FilePath $pluginDest
     $sourceVersion = Extract-Version -FilePath $pluginSource
@@ -259,6 +260,9 @@ if ($curl) {
 
 # Offer to install JSON library (check for curl/Invoke-WebRequest first)
 Write-Host ""
+Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+Write-Host "📚 JSON Library Installation (Recommended)" -ForegroundColor Cyan
+Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
 $hasDownloadTool = $false
 $downloadTool = ""
 
@@ -274,7 +278,12 @@ if ($curl) {
 }
 
 if ($hasDownloadTool) {
-    $installJson = Read-Host "Install JSON library for better performance? (y/n)"
+    Write-Host "The JSON library significantly improves parsing performance for:" -ForegroundColor Cyan
+    Write-Host "  • urlscan.io search results" -ForegroundColor Cyan
+    Write-Host "  • Complex JSON responses from all APIs" -ForegroundColor Cyan
+    Write-Host "  • Nested arrays and objects" -ForegroundColor Cyan
+    Write-Host ""
+    $installJson = Read-Host "Install JSON library? (y/n)"
     if ($installJson -eq "y" -or $installJson -eq "Y") {
         $jsonUrl = "https://raw.githubusercontent.com/rxi/json.lua/master/json.lua"
         $jsonDest = Join-Path $PLUGINS_DIR "json.lua"
