@@ -7,52 +7,79 @@ Write-Host "Version 0.2.1 - Windows" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Check if Wireshark is installed
+# Check if Wireshark is installed (try multiple methods)
 $wiresharkExe = $null
-$wiresharkPath = Get-Command wireshark -ErrorAction SilentlyContinue
+$wiresharkFound = $false
 
-if (-not $wiresharkPath) {
-    # Try common installation locations
+# Method 1: Check PATH
+$wiresharkPath = Get-Command wireshark -ErrorAction SilentlyContinue
+if ($wiresharkPath) {
+    $wiresharkExe = $wiresharkPath.Source
+    $wiresharkFound = $true
+}
+
+# Method 2: Check common installation locations
+if (-not $wiresharkFound) {
     $commonPaths = @(
         "${env:ProgramFiles}\Wireshark\wireshark.exe",
         "${env:ProgramFiles(x86)}\Wireshark\wireshark.exe",
-        "${env:LOCALAPPDATA}\Programs\Wireshark\wireshark.exe",
-        "C:\Program Files\Wireshark\wireshark.exe",
-        "C:\Program Files (x86)\Wireshark\wireshark.exe"
+        "${env:LOCALAPPDATA}\Programs\Wireshark\wireshark.exe"
     )
     
     foreach ($path in $commonPaths) {
         if (Test-Path $path) {
             $wiresharkExe = $path
+            $wiresharkFound = $true
             Write-Host "[+] Found Wireshark at: $path" -ForegroundColor Green
             break
         }
     }
-    
-    if (-not $wiresharkExe) {
-        Write-Host "[!] Wireshark is not found in PATH or common installation locations." -ForegroundColor Yellow
-        Write-Host "   Please install Wireshark from https://www.wireshark.org/" -ForegroundColor Yellow
-        Write-Host "   Or ensure Wireshark is in your system PATH." -ForegroundColor Yellow
-        exit 1
-    }
-} else {
-    $wiresharkExe = $wiresharkPath.Source
 }
 
-# Get Wireshark version
-try {
-    if ($wiresharkExe) {
+# Method 3: Check registry for installed programs
+if (-not $wiresharkFound) {
+    $regPaths = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    
+    foreach ($regPath in $regPaths) {
+        $installed = Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*Wireshark*" }
+        if ($installed -and $installed.InstallLocation) {
+            $exePath = Join-Path $installed.InstallLocation "wireshark.exe"
+            if (Test-Path $exePath) {
+                $wiresharkExe = $exePath
+                $wiresharkFound = $true
+                Write-Host "[+] Found Wireshark via registry: $exePath" -ForegroundColor Green
+                break
+            }
+        }
+    }
+}
+
+# Get Wireshark version (optional - proceed even if we can't find exe)
+$WIRESHARK_VERSION = $null
+if ($wiresharkExe) {
+    try {
         $versionOutput = & $wiresharkExe -v 2>&1 | Select-Object -First 1
         $versionMatch = $versionOutput -match '(\d+\.\d+)'
         if ($versionMatch) {
             $WIRESHARK_VERSION = $matches[1]
             Write-Host "[+] Found Wireshark version: $WIRESHARK_VERSION" -ForegroundColor Green
-        } else {
-            Write-Host "[!] Could not determine Wireshark version" -ForegroundColor Yellow
         }
+    } catch {
+        # Version check failed, but continue anyway
     }
-} catch {
-    Write-Host "[!] Could not check Wireshark version" -ForegroundColor Yellow
+}
+
+# Note: We proceed with installation even if Wireshark.exe isn't found
+# because the plugins directory is standard and Wireshark will load plugins
+# from there when it runs, regardless of where wireshark.exe is located
+if (-not $wiresharkFound) {
+    Write-Host "[!] Could not locate wireshark.exe, but proceeding with installation." -ForegroundColor Yellow
+    Write-Host "    Plugins will be installed to the standard location." -ForegroundColor Yellow
+    Write-Host "    If Wireshark is installed, it will load the plugins automatically." -ForegroundColor Yellow
+    Write-Host ""
 }
 
 # Create plugins directory
