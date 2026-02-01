@@ -47,6 +47,28 @@ Right-click on packet field → ASK → [Feature]
 - **TLS Certificate:** `TLS → ASK → Certificate Analysis`
 - **HTTP URL:** `HTTP → ASK → URL Reputation (urlscan.io)`
 
+## 📷 Screenshots
+
+### Context Menu
+![ASK Context Menu](screenshots/screenshot-menu.png)
+*Right-click on any packet field to access ASK features*
+
+### IP Reputation Lookup
+![IP Reputation](screenshots/screenshot-ip-reputation.png)
+*View IP reputation scores from multiple threat intelligence sources*
+
+### URL Analysis
+![URL Reputation](screenshots/screenshot-url-reputation.png)
+*Analyze URLs with urlscan.io sandbox results and VirusTotal scanning*
+
+### Certificate Analysis
+![Certificate Analysis](screenshots/screenshot-certificate-analysis.png)
+*Inspect TLS certificates and check Certificate Transparency logs*
+
+### Installer
+![Installer](screenshots/screenshot-installer.png)
+*Easy installation with version checking and upgrade detection*
+
 ## 🚀 Quick Start
 
 ### Installation
