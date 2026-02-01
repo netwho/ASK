@@ -6,9 +6,9 @@
     - DNS Registration Info (RDAP)
     - ARIN IP Registration Data (RDAP) - IPv4 & IPv6
     - IP Reputation (AbuseIPDB, VirusTotal)
-    - URL Categorization & Reputation (urlscan.io, VirusTotal)
-    - Domain Reputation (VirusTotal)
-    - IP Intelligence (Shodan, IPinfo, GreyNoise)
+    - URL Categorization & Reputation (urlscan.io, VirusTotal, AlienVault OTX, URLhaus)
+    - Domain Reputation (VirusTotal, AlienVault OTX)
+    - IP Intelligence (Shodan, IPinfo, GreyNoise, AlienVault OTX, ThreatFox)
     - TLS/SSL Certificate Analysis (Direct certificate inspection + Certificate Transparency)
     - Email Analysis (SMTP/IMF)
     
@@ -24,7 +24,7 @@
 set_plugin_info({
     version = "0.2.1",
     author = "Walter Hofstetter",
-    description = "Analyst's Shark Knife (ASK) - Comprehensive suite for security analytics and IOC research. Provides DNS registration info (RDAP), IP reputation (AbuseIPDB, VirusTotal), URL categorization (urlscan.io, VirusTotal), IP intelligence (Shodan, IPinfo, GreyNoise), TLS certificate analysis, certificate transparency analysis, DNS analytics, and email analysis.",
+    description = "Analyst's Shark Knife (ASK) - Comprehensive suite for security analytics and IOC research. Provides DNS registration info (RDAP), IP reputation (AbuseIPDB, VirusTotal), URL categorization (urlscan.io, VirusTotal, AlienVault OTX, URLhaus), IP intelligence (Shodan, IPinfo, GreyNoise, AlienVault OTX, ThreatFox), TLS certificate analysis, certificate transparency analysis, DNS analytics, and email analysis.",
     repository = "https://github.com/netwho/ask"
 })
 
@@ -195,6 +195,26 @@ local CONFIG = {
     -- Identifies internet scanners vs legitimate services (RIOT dataset)
     GREYNOISE_ENABLED = true,
     GREYNOISE_API_URL = "https://api.greynoise.io/v3/community",
+    
+    -- AlienVault OTX API Configuration
+    -- Free tier: Unlimited requests (community-driven threat intelligence)
+    -- Registration: https://otx.alienvault.com (free account required)
+    -- Provides IP, domain, URL, and file hash reputation with pulse data
+    -- API key priority: 1. Environment variable, 2. ~/.ask/OTX_API_KEY.txt
+    OTX_API_KEY = get_api_key("OTX", "OTX_API_KEY", ""),
+    OTX_ENABLED = true,
+    OTX_API_URL = "https://otx.alienvault.com/api/v1",
+    
+    -- Abuse.ch API Configuration (URLhaus + ThreatFox)
+    -- Free tier: Fair use policy (free Auth-Key required)
+    -- Registration: https://auth.abuse.ch (free Auth-Key)
+    -- URLhaus: Malware URL detection, payload information, host lookups
+    -- ThreatFox: IOC search (IP, domain, URL, hash), malware family identification
+    -- API key priority: 1. Environment variable, 2. ~/.ask/ABUSECH_API_KEY.txt
+    ABUSECH_API_KEY = get_api_key("ABUSECH", "ABUSECH_API_KEY", ""),
+    ABUSECH_ENABLED = true,
+    URLHAUS_API_URL = "https://urlhaus-api.abuse.ch/v1",
+    THREATFOX_API_URL = "https://threatfox-api.abuse.ch/api/v1",
     
     -- RDAP Configuration (no API key required)
     RDAP_ENABLED = true,
@@ -4448,6 +4468,1083 @@ local function greynoise_ip_callback(fieldname, ...)
 end
 
 -------------------------------------------------
+--- AlienVault OTX (Open Threat Exchange) Module
+-------------------------------------------------
+
+-- Lookup IP address in OTX
+local function lookup_otx_ip(ip)
+    if not CONFIG.OTX_ENABLED then
+        return nil, "OTX is disabled in configuration"
+    end
+    
+    if not CONFIG.OTX_API_KEY or CONFIG.OTX_API_KEY == "" then
+        return nil, "OTX API key not configured. Please set OTX_API_KEY environment variable or create ~/.ask/OTX_API_KEY.txt"
+    end
+    
+    if not is_valid_ip(ip) then
+        return nil, "Invalid IP address"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("otx_ip", ip)
+    if cached then
+        log_message("Using cached OTX data for IP: " .. ip)
+        return cached, nil
+    end
+    
+    -- Determine IP version for endpoint
+    local ip_type = is_valid_ipv6(ip) and "IPv6" or "IPv4"
+    local url = string.format("%s/indicators/%s/%s/general", CONFIG.OTX_API_URL, ip_type, ip)
+    
+    log_message("Querying OTX API for IP: " .. ip)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.1"
+    }
+    
+    local response, err = http_get(url, headers)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "OTX API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse OTX response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.error then
+        return nil, "OTX API Error: " .. tostring(data.error)
+    end
+    
+    -- Cache the result
+    cache_set("otx_ip", ip, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Lookup domain in OTX
+local function lookup_otx_domain(domain)
+    if not CONFIG.OTX_ENABLED then
+        return nil, "OTX is disabled in configuration"
+    end
+    
+    if not CONFIG.OTX_API_KEY or CONFIG.OTX_API_KEY == "" then
+        return nil, "OTX API key not configured. Please set OTX_API_KEY environment variable or create ~/.ask/OTX_API_KEY.txt"
+    end
+    
+    if not domain or domain == "" then
+        return nil, "Invalid domain"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("otx_domain", domain)
+    if cached then
+        log_message("Using cached OTX data for domain: " .. domain)
+        return cached, nil
+    end
+    
+    local url = string.format("%s/indicators/domain/%s/general", CONFIG.OTX_API_URL, url_encode(domain))
+    
+    log_message("Querying OTX API for domain: " .. domain)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.1"
+    }
+    
+    local response, err = http_get(url, headers)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "OTX API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse OTX response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.error then
+        return nil, "OTX API Error: " .. tostring(data.error)
+    end
+    
+    -- Cache the result
+    cache_set("otx_domain", domain, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Lookup URL in OTX
+local function lookup_otx_url(url)
+    if not CONFIG.OTX_ENABLED then
+        return nil, "OTX is disabled in configuration"
+    end
+    
+    if not CONFIG.OTX_API_KEY or CONFIG.OTX_API_KEY == "" then
+        return nil, "OTX API key not configured. Please set OTX_API_KEY environment variable or create ~/.ask/OTX_API_KEY.txt"
+    end
+    
+    if not url or url == "" then
+        return nil, "Invalid URL"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("otx_url", url)
+    if cached then
+        log_message("Using cached OTX data for URL: " .. url)
+        return cached, nil
+    end
+    
+    -- OTX requires URL encoding for the URL parameter
+    local encoded_url = url_encode(url)
+    local api_url = string.format("%s/indicators/url/%s/general", CONFIG.OTX_API_URL, encoded_url)
+    
+    log_message("Querying OTX API for URL: " .. url)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.1"
+    }
+    
+    local response, err = http_get(api_url, headers)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "OTX API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse OTX response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.error then
+        return nil, "OTX API Error: " .. tostring(data.error)
+    end
+    
+    -- Cache the result
+    cache_set("otx_url", url, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Format OTX IP result
+local function format_otx_ip_result(data, ip)
+    ip = ip or "unknown"
+    
+    if not data then
+        return "=== AlienVault OTX IP Intelligence ===\n\n" ..
+               "Query: " .. ip .. "\n\n" ..
+               "No data available from OTX for this IP address.\n" ..
+               "This could mean:\n" ..
+               "- The IP has not been observed in any threat intelligence reports\n" ..
+               "- The IP is not in OTX's database\n" ..
+               "- The IP is clean and has no associated threats"
+    end
+    
+    local result = "=== AlienVault OTX IP Intelligence ===\n\n"
+    result = result .. "Query: " .. ip .. "\n\n"
+    
+    -- Indicator type
+    if data.type then
+        result = result .. "--- Indicator Type ---\n"
+        result = result .. "Type: " .. tostring(data.type) .. "\n\n"
+    end
+    
+    -- Reputation score (0-100, higher is more suspicious)
+    if data.reputation then
+        result = result .. "--- Reputation Score ---\n"
+        local rep = tonumber(data.reputation) or 0
+        result = result .. "Score: " .. rep .. "/100\n"
+        if rep >= 75 then
+            result = result .. "Status: HIGH RISK - Strong indicators of malicious activity\n"
+        elseif rep >= 50 then
+            result = result .. "Status: MODERATE RISK - Some suspicious indicators\n"
+        elseif rep >= 25 then
+            result = result .. "Status: LOW RISK - Minor suspicious indicators\n"
+        else
+            result = result .. "Status: CLEAN - No significant threat indicators\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- Pulse information (threat intelligence reports)
+    if data.pulse_info then
+        local pulse_count = data.pulse_info.count or 0
+        if pulse_count > 0 then
+            result = result .. "--- Threat Intelligence Reports (Pulses) ---\n"
+            result = result .. "Total Pulses: " .. pulse_count .. "\n\n"
+            
+            if data.pulse_info.pulses and #data.pulse_info.pulses > 0 then
+                result = result .. "Recent Threat Reports:\n"
+                local pulse_limit = math.min(5, #data.pulse_info.pulses)  -- Show up to 5 pulses
+                for i = 1, pulse_limit do
+                    local pulse = data.pulse_info.pulses[i]
+                    result = result .. "\n" .. i .. ". "
+                    if pulse.name then
+                        result = result .. pulse.name .. "\n"
+                    end
+                    if pulse.description then
+                        result = result .. "   Description: " .. string.sub(pulse.description, 1, 100)
+                        if string.len(pulse.description) > 100 then
+                            result = result .. "..."
+                        end
+                        result = result .. "\n"
+                    end
+                    if pulse.author and pulse.author.username then
+                        result = result .. "   Author: " .. pulse.author.username .. "\n"
+                    end
+                    if pulse.created then
+                        result = result .. "   Created: " .. pulse.created .. "\n"
+                    end
+                    if pulse.TLP then
+                        result = result .. "   TLP: " .. pulse.TLP .. "\n"
+                    end
+                    if pulse.tags and #pulse.tags > 0 then
+                        result = result .. "   Tags: " .. table.concat(pulse.tags, ", ") .. "\n"
+                    end
+                end
+                if pulse_count > pulse_limit then
+                    result = result .. "\n... and " .. (pulse_count - pulse_limit) .. " more pulse(s)\n"
+                end
+                result = result .. "\n"
+            end
+        else
+            result = result .. "--- Threat Intelligence Reports ---\n"
+            result = result .. "No threat intelligence pulses found for this IP.\n\n"
+        end
+    end
+    
+    -- Geographic information
+    if data.country_name or data.asn then
+        result = result .. "--- Geographic Information ---\n"
+        if data.country_name then
+            result = result .. "Country: " .. data.country_name .. "\n"
+        end
+        if data.asn then
+            result = result .. "ASN: " .. data.asn .. "\n"
+        end
+        if data.latitude and data.longitude then
+            result = result .. "Coordinates: " .. data.latitude .. ", " .. data.longitude .. "\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- Available sections
+    if data.sections and #data.sections > 0 then
+        result = result .. "--- Available Data Sections ---\n"
+        result = result .. "Additional data available: " .. table.concat(data.sections, ", ") .. "\n"
+        result = result .. "\n"
+    end
+    
+    -- Link to OTX
+    result = result .. "--- Additional Information ---\n"
+    result = result .. "View full details: https://otx.alienvault.com/indicator/ip/" .. ip .. "\n"
+    result = result .. "\nNote: OTX is a free, community-driven threat intelligence platform.\n"
+    result = result .. "For more detailed analysis, visit the OTX website.\n"
+    
+    return result
+end
+
+-- Format OTX domain result
+local function format_otx_domain_result(data, domain)
+    domain = domain or "unknown"
+    
+    if not data then
+        return "=== AlienVault OTX Domain Intelligence ===\n\n" ..
+               "Query: " .. domain .. "\n\n" ..
+               "No data available from OTX for this domain.\n" ..
+               "This could mean:\n" ..
+               "- The domain has not been observed in any threat intelligence reports\n" ..
+               "- The domain is not in OTX's database\n" ..
+               "- The domain is clean and has no associated threats"
+    end
+    
+    local result = "=== AlienVault OTX Domain Intelligence ===\n\n"
+    result = result .. "Query: " .. domain .. "\n\n"
+    
+    -- Pulse information (threat intelligence reports)
+    if data.pulse_info then
+        local pulse_count = data.pulse_info.count or 0
+        if pulse_count > 0 then
+            result = result .. "--- Threat Intelligence Reports (Pulses) ---\n"
+            result = result .. "Total Pulses: " .. pulse_count .. "\n\n"
+            
+            if data.pulse_info.pulses and #data.pulse_info.pulses > 0 then
+                result = result .. "Recent Threat Reports:\n"
+                local pulse_limit = math.min(5, #data.pulse_info.pulses)  -- Show up to 5 pulses
+                for i = 1, pulse_limit do
+                    local pulse = data.pulse_info.pulses[i]
+                    result = result .. "\n" .. i .. ". "
+                    if pulse.name then
+                        result = result .. pulse.name .. "\n"
+                    end
+                    if pulse.description then
+                        result = result .. "   Description: " .. string.sub(pulse.description, 1, 100)
+                        if string.len(pulse.description) > 100 then
+                            result = result .. "..."
+                        end
+                        result = result .. "\n"
+                    end
+                    if pulse.author and pulse.author.username then
+                        result = result .. "   Author: " .. pulse.author.username .. "\n"
+                    end
+                    if pulse.created then
+                        result = result .. "   Created: " .. pulse.created .. "\n"
+                    end
+                    if pulse.TLP then
+                        result = result .. "   TLP: " .. pulse.TLP .. "\n"
+                    end
+                    if pulse.tags and #pulse.tags > 0 then
+                        result = result .. "   Tags: " .. table.concat(pulse.tags, ", ") .. "\n"
+                    end
+                end
+                if pulse_count > pulse_limit then
+                    result = result .. "\n... and " .. (pulse_count - pulse_limit) .. " more pulse(s)\n"
+                end
+                result = result .. "\n"
+            end
+        else
+            result = result .. "--- Threat Intelligence Reports ---\n"
+            result = result .. "No threat intelligence pulses found for this domain.\n\n"
+        end
+    end
+    
+    -- Available sections
+    if data.sections and #data.sections > 0 then
+        result = result .. "--- Available Data Sections ---\n"
+        result = result .. "Additional data available: " .. table.concat(data.sections, ", ") .. "\n"
+        result = result .. "\n"
+    end
+    
+    -- Link to OTX
+    result = result .. "--- Additional Information ---\n"
+    result = result .. "View full details: https://otx.alienvault.com/indicator/domain/" .. url_encode(domain) .. "\n"
+    result = result .. "\nNote: OTX is a free, community-driven threat intelligence platform.\n"
+    result = result .. "For more detailed analysis, visit the OTX website.\n"
+    
+    return result
+end
+
+-- Format OTX URL result
+local function format_otx_url_result(data, url)
+    url = url or "unknown"
+    
+    if not data then
+        return "=== AlienVault OTX URL Intelligence ===\n\n" ..
+               "Query: " .. url .. "\n\n" ..
+               "No data available from OTX for this URL.\n" ..
+               "This could mean:\n" ..
+               "- The URL has not been observed in any threat intelligence reports\n" ..
+               "- The URL is not in OTX's database\n" ..
+               "- The URL is clean and has no associated threats"
+    end
+    
+    local result = "=== AlienVault OTX URL Intelligence ===\n\n"
+    result = result .. "Query: " .. url .. "\n\n"
+    
+    -- Pulse information (threat intelligence reports)
+    if data.pulse_info then
+        local pulse_count = data.pulse_info.count or 0
+        if pulse_count > 0 then
+            result = result .. "--- Threat Intelligence Reports (Pulses) ---\n"
+            result = result .. "Total Pulses: " .. pulse_count .. "\n\n"
+            
+            if data.pulse_info.pulses and #data.pulse_info.pulses > 0 then
+                result = result .. "Recent Threat Reports:\n"
+                local pulse_limit = math.min(5, #data.pulse_info.pulses)  -- Show up to 5 pulses
+                for i = 1, pulse_limit do
+                    local pulse = data.pulse_info.pulses[i]
+                    result = result .. "\n" .. i .. ". "
+                    if pulse.name then
+                        result = result .. pulse.name .. "\n"
+                    end
+                    if pulse.description then
+                        result = result .. "   Description: " .. string.sub(pulse.description, 1, 100)
+                        if string.len(pulse.description) > 100 then
+                            result = result .. "..."
+                        end
+                        result = result .. "\n"
+                    end
+                    if pulse.author and pulse.author.username then
+                        result = result .. "   Author: " .. pulse.author.username .. "\n"
+                    end
+                    if pulse.created then
+                        result = result .. "   Created: " .. pulse.created .. "\n"
+                    end
+                    if pulse.TLP then
+                        result = result .. "   TLP: " .. pulse.TLP .. "\n"
+                    end
+                    if pulse.tags and #pulse.tags > 0 then
+                        result = result .. "   Tags: " .. table.concat(pulse.tags, ", ") .. "\n"
+                    end
+                end
+                if pulse_count > pulse_limit then
+                    result = result .. "\n... and " .. (pulse_count - pulse_limit) .. " more pulse(s)\n"
+                end
+                result = result .. "\n"
+            end
+        else
+            result = result .. "--- Threat Intelligence Reports ---\n"
+            result = result .. "No threat intelligence pulses found for this URL.\n\n"
+        end
+    end
+    
+    -- Available sections
+    if data.sections and #data.sections > 0 then
+        result = result .. "--- Available Data Sections ---\n"
+        result = result .. "Additional data available: " .. table.concat(data.sections, ", ") .. "\n"
+        result = result .. "\n"
+    end
+    
+    -- Link to OTX
+    result = result .. "--- Additional Information ---\n"
+    result = result .. "View full details: https://otx.alienvault.com/indicator/url/" .. url_encode(url) .. "\n"
+    result = result .. "\nNote: OTX is a free, community-driven threat intelligence platform.\n"
+    result = result .. "For more detailed analysis, visit the OTX website.\n"
+    
+    return result
+end
+
+-- OTX IP callback
+local function otx_ip_callback(fieldname, ...)
+    local fields = {...}
+    local ip_raw = get_field_value(fieldname, "display", fields)
+    
+    if not ip_raw then
+        show_error_window("OTX IP Lookup", "Could not extract IP address from packet")
+        return
+    end
+    
+    -- Extract IP address from the field value (might contain hostname)
+    local ip = extract_ip_from_string(ip_raw)
+    if not ip then
+        show_error_window("OTX IP Lookup", "Could not extract valid IP address from: " .. ip_raw)
+        return
+    end
+    
+    -- Check if this is an RFC 1918 private address
+    if is_rfc1918_private(ip) then
+        local formatted = format_rfc1918_info(ip)
+        show_result_window("Private IP Address: " .. ip, formatted)
+        return
+    end
+    
+    local data, err = lookup_otx_ip(ip)
+    if err then
+        show_error_window("OTX Error", "Error querying OTX:\n" .. err)
+        return
+    end
+    
+    local formatted = format_otx_ip_result(data, ip)
+    show_result_window("AlienVault OTX IP Intelligence: " .. ip, formatted)
+end
+
+-- OTX domain callback
+local function otx_domain_callback(...)
+    local fields = {...}
+    local domain = get_field_value("dns.qry.name", "display", fields)
+    
+    if not domain then
+        show_error_window("OTX Domain Lookup", "Could not extract domain from packet")
+        return
+    end
+    
+    local data, err = lookup_otx_domain(domain)
+    if err then
+        show_error_window("OTX Error", "Error querying OTX:\n" .. err)
+        return
+    end
+    
+    local formatted = format_otx_domain_result(data, domain)
+    show_result_window("AlienVault OTX Domain Intelligence: " .. domain, formatted)
+end
+
+-- OTX URL callback
+local function otx_url_callback(...)
+    local fields = {...}
+    local url = get_field_value("http.request.full_uri", "display", fields)
+    
+    if not url then
+        show_error_window("OTX URL Lookup", "Could not extract URL from packet")
+        return
+    end
+    
+    local data, err = lookup_otx_url(url)
+    if err then
+        show_error_window("OTX Error", "Error querying OTX:\n" .. err)
+        return
+    end
+    
+    local formatted = format_otx_url_result(data, url)
+    show_result_window("AlienVault OTX URL Intelligence: " .. url, formatted)
+end
+
+-------------------------------------------------
+--- Abuse.ch (URLhaus & ThreatFox) Module
+-------------------------------------------------
+
+-- Lookup URL in URLhaus
+local function lookup_urlhaus_url(url)
+    if not CONFIG.ABUSECH_ENABLED then
+        return nil, "Abuse.ch is disabled in configuration"
+    end
+    
+    if not CONFIG.ABUSECH_API_KEY or CONFIG.ABUSECH_API_KEY == "" then
+        return nil, "Abuse.ch API key not configured. Please set ABUSECH_API_KEY environment variable or create ~/.ask/ABUSECH_API_KEY.txt"
+    end
+    
+    if not url or url == "" then
+        return nil, "Invalid URL"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("urlhaus_url", url)
+    if cached then
+        log_message("Using cached URLhaus data for URL: " .. url)
+        return cached, nil
+    end
+    
+    local api_url = CONFIG.URLHAUS_API_URL .. "/url/"
+    
+    log_message("Querying URLhaus API for URL: " .. url)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
+        ["Content-Type"] = "application/x-www-form-urlencoded",
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.1"
+    }
+    
+    -- URLhaus requires POST with url parameter
+    local post_data = "url=" .. url_encode(url)
+    
+    local response, err = http_post(api_url, headers, post_data)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "URLhaus API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse URLhaus response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.query_status then
+        if data.query_status == "no_results" then
+            return {query_status = "no_results"}, nil
+        elseif data.query_status ~= "ok" then
+            return nil, "URLhaus API Error: " .. tostring(data.query_status)
+        end
+    end
+    
+    -- Cache the result
+    cache_set("urlhaus_url", url, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Lookup host (IP or domain) in URLhaus
+local function lookup_urlhaus_host(host)
+    if not CONFIG.ABUSECH_ENABLED then
+        return nil, "Abuse.ch is disabled in configuration"
+    end
+    
+    if not CONFIG.ABUSECH_API_KEY or CONFIG.ABUSECH_API_KEY == "" then
+        return nil, "Abuse.ch API key not configured. Please set ABUSECH_API_KEY environment variable or create ~/.ask/ABUSECH_API_KEY.txt"
+    end
+    
+    if not host or host == "" then
+        return nil, "Invalid host"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("urlhaus_host", host)
+    if cached then
+        log_message("Using cached URLhaus data for host: " .. host)
+        return cached, nil
+    end
+    
+    local api_url = CONFIG.URLHAUS_API_URL .. "/host/"
+    
+    log_message("Querying URLhaus API for host: " .. host)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
+        ["Content-Type"] = "application/x-www-form-urlencoded",
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.1"
+    }
+    
+    -- URLhaus requires POST with host parameter
+    local post_data = "host=" .. url_encode(host)
+    
+    local response, err = http_post(api_url, headers, post_data)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "URLhaus API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse URLhaus response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.query_status then
+        if data.query_status == "no_results" then
+            return {query_status = "no_results"}, nil
+        elseif data.query_status ~= "ok" then
+            return nil, "URLhaus API Error: " .. tostring(data.query_status)
+        end
+    end
+    
+    -- Cache the result
+    cache_set("urlhaus_host", host, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Search IOC in ThreatFox
+local function lookup_threatfox_ioc(ioc)
+    if not CONFIG.ABUSECH_ENABLED then
+        return nil, "Abuse.ch is disabled in configuration"
+    end
+    
+    if not CONFIG.ABUSECH_API_KEY or CONFIG.ABUSECH_API_KEY == "" then
+        return nil, "Abuse.ch API key not configured. Please set ABUSECH_API_KEY environment variable or create ~/.ask/ABUSECH_API_KEY.txt"
+    end
+    
+    if not ioc or ioc == "" then
+        return nil, "Invalid IOC"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("threatfox_ioc", ioc)
+    if cached then
+        log_message("Using cached ThreatFox data for IOC: " .. ioc)
+        return cached, nil
+    end
+    
+    local api_url = CONFIG.THREATFOX_API_URL .. "/"
+    
+    log_message("Querying ThreatFox API for IOC: " .. ioc)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
+        ["Content-Type"] = "application/json",
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.1"
+    }
+    
+    -- ThreatFox requires JSON POST body
+    local json_body = string.format('{"query": "search_ioc", "search_term": "%s", "exact_match": true}', 
+                                    string.gsub(ioc, '"', '\\"'))
+    
+    local response, err = http_post(api_url, headers, json_body)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "ThreatFox API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse ThreatFox response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.query_status and data.query_status ~= "ok" then
+        -- ThreatFox returns "no_result" (singular) when no results found
+        if data.query_status == "no_results" or data.query_status == "no_result" then
+            return {query_status = "no_results", data = {}}, nil
+        else
+            return nil, "ThreatFox API Error: " .. tostring(data.query_status)
+        end
+    end
+    
+    -- Cache the result
+    cache_set("threatfox_ioc", ioc, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Format URLhaus URL result
+local function format_urlhaus_url_result(data, url)
+    url = url or "unknown"
+    
+    if not data or data.query_status == "no_results" then
+        return "=== URLhaus URL Intelligence ===\n\n" ..
+               "Query: " .. url .. "\n\n" ..
+               "No data available from URLhaus for this URL.\n" ..
+               "This could mean:\n" ..
+               "- The URL has not been observed distributing malware\n" ..
+               "- The URL is not in URLhaus's database\n" ..
+               "- The URL is clean and has no associated threats"
+    end
+    
+    local result = "=== URLhaus URL Intelligence ===\n\n"
+    result = result .. "Query: " .. url .. "\n\n"
+    
+    -- URL status
+    if data.url_status then
+        result = result .. "--- URL Status ---\n"
+        result = result .. "Status: " .. data.url_status .. "\n"
+        if data.url_status == "online" then
+            result = result .. "⚠️ WARNING: URL is currently ONLINE and serving malware!\n"
+        elseif data.url_status == "offline" then
+            result = result .. "✓ URL is offline (no longer serving malware)\n"
+            if data.last_online then
+                result = result .. "Last Online: " .. data.last_online .. "\n"
+            end
+        end
+        result = result .. "\n"
+    end
+    
+    -- Threat type
+    if data.threat then
+        result = result .. "--- Threat Type ---\n"
+        result = result .. "Type: " .. data.threat .. "\n\n"
+    end
+    
+    -- Blacklists
+    if data.blacklists then
+        result = result .. "--- Blacklist Status ---\n"
+        if data.blacklists.spamhaus_dbl and data.blacklists.spamhaus_dbl ~= "not listed" then
+            result = result .. "Spamhaus DBL: " .. data.blacklists.spamhaus_dbl .. " ⚠️\n"
+        end
+        if data.blacklists.surbl and data.blacklists.surbl == "listed" then
+            result = result .. "SURBL: Listed ⚠️\n"
+        end
+        if (not data.blacklists.spamhaus_dbl or data.blacklists.spamhaus_dbl == "not listed") and
+           (not data.blacklists.surbl or data.blacklists.surbl == "not listed") then
+            result = result .. "Not listed on major blacklists\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- Tags
+    if data.tags and #data.tags > 0 then
+        result = result .. "--- Tags ---\n"
+        result = result .. table.concat(data.tags, ", ") .. "\n\n"
+    end
+    
+    -- Payloads
+    if data.payloads and #data.payloads > 0 then
+        result = result .. "--- Malware Payloads ---\n"
+        result = result .. "Total Payloads: " .. #data.payloads .. "\n\n"
+        local payload_limit = math.min(5, #data.payloads)
+        for i = 1, payload_limit do
+            local payload = data.payloads[i]
+            result = result .. i .. ". "
+            if payload.filename then
+                result = result .. "Filename: " .. payload.filename .. "\n"
+            end
+            if payload.file_type then
+                result = result .. "   Type: " .. payload.file_type .. "\n"
+            end
+            if payload.response_sha256 then
+                result = result .. "   SHA256: " .. payload.response_sha256 .. "\n"
+            end
+            if payload.signature then
+                result = result .. "   Malware Family: " .. payload.signature .. "\n"
+            end
+            if payload.firstseen then
+                result = result .. "   First Seen: " .. payload.firstseen .. "\n"
+            end
+            result = result .. "\n"
+        end
+        if #data.payloads > payload_limit then
+            result = result .. "... and " .. (#data.payloads - payload_limit) .. " more payload(s)\n\n"
+        end
+    end
+    
+    -- Date added
+    if data.date_added then
+        result = result .. "--- Timeline ---\n"
+        result = result .. "Date Added: " .. data.date_added .. "\n\n"
+    end
+    
+    -- Link to URLhaus
+    if data.urlhaus_reference then
+        result = result .. "--- Additional Information ---\n"
+        result = result .. "View full details: " .. data.urlhaus_reference .. "\n"
+    else
+        result = result .. "--- Additional Information ---\n"
+        result = result .. "View full details: https://urlhaus.abuse.ch/url/" .. url_encode(url) .. "\n"
+    end
+    result = result .. "\nNote: URLhaus tracks malware distribution URLs.\n"
+    
+    return result
+end
+
+-- Format URLhaus host result
+local function format_urlhaus_host_result(data, host)
+    host = host or "unknown"
+    
+    if not data or data.query_status == "no_results" then
+        return "=== URLhaus Host Intelligence ===\n\n" ..
+               "Query: " .. host .. "\n\n" ..
+               "No data available from URLhaus for this host.\n" ..
+               "This could mean:\n" ..
+               "- The host has not been observed hosting malware URLs\n" ..
+               "- The host is not in URLhaus's database\n" ..
+               "- The host is clean and has no associated threats"
+    end
+    
+    local result = "=== URLhaus Host Intelligence ===\n\n"
+    result = result .. "Query: " .. host .. "\n\n"
+    
+    -- URL count
+    if data.url_count then
+        result = result .. "--- Summary ---\n"
+        result = result .. "Malware URLs Observed: " .. data.url_count .. "\n"
+        if data.firstseen then
+            result = result .. "First Seen: " .. data.firstseen .. "\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- Blacklists
+    if data.blacklists then
+        result = result .. "--- Blacklist Status ---\n"
+        if data.blacklists.spamhaus_dbl and data.blacklists.spamhaus_dbl ~= "not listed" then
+            result = result .. "Spamhaus DBL: " .. data.blacklists.spamhaus_dbl .. " ⚠️\n"
+        end
+        if data.blacklists.surbl and data.blacklists.surbl == "listed" then
+            result = result .. "SURBL: Listed ⚠️\n"
+        end
+        if (not data.blacklists.spamhaus_dbl or data.blacklists.spamhaus_dbl == "not listed") and
+           (not data.blacklists.surbl or data.blacklists.surbl == "not listed") then
+            result = result .. "Not listed on major blacklists\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- URLs
+    if data.urls and #data.urls > 0 then
+        result = result .. "--- Malware URLs ---\n"
+        local url_limit = math.min(10, #data.urls)
+        for i = 1, url_limit do
+            local url_data = data.urls[i]
+            result = result .. i .. ". " .. (url_data.url or "unknown") .. "\n"
+            if url_data.url_status then
+                result = result .. "   Status: " .. url_data.url_status .. "\n"
+            end
+            if url_data.threat then
+                result = result .. "   Threat: " .. url_data.threat .. "\n"
+            end
+            if url_data.tags and #url_data.tags > 0 then
+                result = result .. "   Tags: " .. table.concat(url_data.tags, ", ") .. "\n"
+            end
+            result = result .. "\n"
+        end
+        if #data.urls > url_limit then
+            result = result .. "... and " .. (#data.urls - url_limit) .. " more URL(s)\n\n"
+        end
+    end
+    
+    -- Link to URLhaus
+    if data.urlhaus_reference then
+        result = result .. "--- Additional Information ---\n"
+        result = result .. "View full details: " .. data.urlhaus_reference .. "\n"
+    else
+        result = result .. "--- Additional Information ---\n"
+        result = result .. "View full details: https://urlhaus.abuse.ch/host/" .. url_encode(host) .. "\n"
+    end
+    result = result .. "\nNote: URLhaus tracks malware distribution URLs.\n"
+    
+    return result
+end
+
+-- Format ThreatFox IOC result
+local function format_threatfox_ioc_result(data, ioc)
+    ioc = ioc or "unknown"
+    
+    if not data or data.query_status == "no_results" or data.query_status == "no_result" or not data.data or #data.data == 0 then
+        return "=== ThreatFox IOC Intelligence ===\n\n" ..
+               "Query: " .. ioc .. "\n\n" ..
+               "No data available from ThreatFox for this IOC.\n" ..
+               "This could mean:\n" ..
+               "- The IOC has not been observed in any threat intelligence reports\n" ..
+               "- The IOC is not in ThreatFox's database\n" ..
+               "- The IOC is clean and has no associated threats"
+    end
+    
+    local result = "=== ThreatFox IOC Intelligence ===\n\n"
+    result = result .. "Query: " .. ioc .. "\n\n"
+    
+    -- Show up to 5 results
+    local result_limit = math.min(5, #data.data)
+    result = result .. "Found " .. #data.data .. " IOC(s) (showing " .. result_limit .. ")\n\n"
+    
+    for i = 1, result_limit do
+        local ioc_data = data.data[i]
+        result = result .. "--- IOC #" .. i .. " ---\n"
+        
+        if ioc_data.ioc then
+            result = result .. "IOC: " .. ioc_data.ioc .. "\n"
+        end
+        
+        if ioc_data.threat_type_desc then
+            result = result .. "Threat Type: " .. ioc_data.threat_type_desc .. "\n"
+        end
+        
+        if ioc_data.malware_printable then
+            result = result .. "Malware Family: " .. ioc_data.malware_printable
+            if ioc_data.malware_alias then
+                result = result .. " (" .. ioc_data.malware_alias .. ")"
+            end
+            result = result .. "\n"
+        end
+        
+        if ioc_data.confidence_level then
+            result = result .. "Confidence Level: " .. ioc_data.confidence_level .. "/100\n"
+        end
+        
+        if ioc_data.first_seen then
+            result = result .. "First Seen: " .. ioc_data.first_seen .. "\n"
+        end
+        
+        if ioc_data.last_seen then
+            result = result .. "Last Seen: " .. ioc_data.last_seen .. "\n"
+        end
+        
+        if ioc_data.tags and #ioc_data.tags > 0 then
+            result = result .. "Tags: " .. table.concat(ioc_data.tags, ", ") .. "\n"
+        end
+        
+        if ioc_data.reference then
+            result = result .. "Reference: " .. ioc_data.reference .. "\n"
+        end
+        
+        result = result .. "\n"
+    end
+    
+    if #data.data > result_limit then
+        result = result .. "... and " .. (#data.data - result_limit) .. " more IOC(s)\n\n"
+    end
+    
+    result = result .. "--- Additional Information ---\n"
+    result = result .. "View full details: https://threatfox.abuse.ch\n"
+    result = result .. "\nNote: ThreatFox tracks IOCs (Indicators of Compromise) including botnet C&C servers.\n"
+    
+    return result
+end
+
+-- URLhaus URL callback
+local function urlhaus_url_callback(...)
+    local fields = {...}
+    local url = get_field_value("http.request.full_uri", "display", fields)
+    
+    if not url then
+        show_error_window("URLhaus URL Lookup", "Could not extract URL from packet")
+        return
+    end
+    
+    local data, err = lookup_urlhaus_url(url)
+    if err then
+        show_error_window("URLhaus Error", "Error querying URLhaus:\n" .. err)
+        return
+    end
+    
+    local formatted = format_urlhaus_url_result(data, url)
+    show_result_window("URLhaus URL Intelligence: " .. url, formatted)
+end
+
+-- URLhaus host callback
+local function urlhaus_host_callback(fieldname, ...)
+    local fields = {...}
+    local host_raw = get_field_value(fieldname, "display", fields)
+    
+    if not host_raw then
+        show_error_window("URLhaus Host Lookup", "Could not extract host from packet")
+        return
+    end
+    
+    -- Extract IP or domain from the field value
+    local host = extract_ip_from_string(host_raw) or host_raw
+    if not host or host == "" then
+        show_error_window("URLhaus Host Lookup", "Could not extract valid host from: " .. host_raw)
+        return
+    end
+    
+    -- Check if this is an RFC 1918 private address
+    if is_rfc1918_private(host) then
+        local formatted = format_rfc1918_info(host)
+        show_result_window("Private IP Address: " .. host, formatted)
+        return
+    end
+    
+    local data, err = lookup_urlhaus_host(host)
+    if err then
+        show_error_window("URLhaus Error", "Error querying URLhaus:\n" .. err)
+        return
+    end
+    
+    local formatted = format_urlhaus_host_result(data, host)
+    show_result_window("URLhaus Host Intelligence: " .. host, formatted)
+end
+
+-- ThreatFox IOC callback
+local function threatfox_ioc_callback(fieldname, ...)
+    local fields = {...}
+    local ioc_raw = get_field_value(fieldname, "display", fields)
+    
+    if not ioc_raw then
+        show_error_window("ThreatFox IOC Lookup", "Could not extract IOC from packet")
+        return
+    end
+    
+    -- Extract IP, domain, or use as-is for URL
+    local ioc = extract_ip_from_string(ioc_raw) or ioc_raw
+    if not ioc or ioc == "" then
+        show_error_window("ThreatFox IOC Lookup", "Could not extract valid IOC from: " .. ioc_raw)
+        return
+    end
+    
+    -- Check if this is an RFC 1918 private address
+    if is_rfc1918_private(ioc) then
+        local formatted = format_rfc1918_info(ioc)
+        show_result_window("Private IP Address: " .. ioc, formatted)
+        return
+    end
+    
+    local data, err = lookup_threatfox_ioc(ioc)
+    if err then
+        show_error_window("ThreatFox Error", "Error querying ThreatFox:\n" .. err)
+        return
+    end
+    
+    local formatted = format_threatfox_ioc_result(data, ioc)
+    show_result_window("ThreatFox IOC Intelligence: " .. ioc, formatted)
+end
+
+-------------------------------------------------
 -- TLS Certificate Analysis Module
 -------------------------------------------------
 
@@ -6565,8 +7662,8 @@ local function nmap_service_scan(ip)
     return output, nil
 end
 
--- Execute OS fingerprinting scan
-local function nmap_os_scan(ip)
+-- Execute Vulners vulnerability scan
+local function nmap_vulners_scan(ip)
     local nmap_available, nmap_path = check_nmap_available()
     if not nmap_available then
         local platform = "unknown"
@@ -6578,8 +7675,10 @@ local function nmap_os_scan(ip)
                                   "1. Download Nmap from: https://nmap.org/download.html\n" ..
                                   "   OR install via Chocolatey: choco install nmap\n" ..
                                   "2. Add Nmap to your system PATH\n" ..
-                                  "3. Restart Wireshark\n\n" ..
-                                  "Note: OS fingerprinting requires administrator privileges on Windows."
+                                  "3. Install Vulners script:\n" ..
+                                  "   Download from: https://github.com/vulnersCom/nmap-vulners\n" ..
+                                  "   Place vulners.nse in: C:\\Program Files (x86)\\Nmap\\scripts\\\n" ..
+                                  "4. Restart Wireshark"
         else
             local uname_handle = io.popen("uname -s 2>&1")
             if uname_handle then
@@ -6591,7 +7690,10 @@ local function nmap_os_scan(ip)
                                           "brew install nmap\n" ..
                                           "OR\n" ..
                                           "sudo port install nmap\n\n" ..
-                                          "Note: OS fingerprinting requires root privileges (use sudo)."
+                                          "Install Vulners script:\n" ..
+                                          "wget -O /opt/homebrew/share/nmap/scripts/vulners.nse https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse\n" ..
+                                          "OR\n" ..
+                                          "sudo wget -O /usr/local/share/nmap/scripts/vulners.nse https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse"
                 else
                     platform = "Linux"
                     install_instructions = "\n\nInstallation Instructions for Linux:\n" ..
@@ -6599,7 +7701,9 @@ local function nmap_os_scan(ip)
                                           "RedHat/CentOS: sudo yum install nmap\n" ..
                                           "Fedora: sudo dnf install nmap\n" ..
                                           "Arch: sudo pacman -S nmap\n\n" ..
-                                          "Note: OS fingerprinting requires root privileges (use sudo)."
+                                          "Install Vulners script:\n" ..
+                                          "sudo wget -O /usr/share/nmap/scripts/vulners.nse https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse\n" ..
+                                          "sudo nmap --script-updatedb"
                 end
             end
         end
@@ -6609,27 +7713,15 @@ local function nmap_os_scan(ip)
                    install_instructions
     end
     
-    -- Check if running with root privileges (OS fingerprinting requires root)
-    local has_root = is_running_as_root()
-    
-    if not has_root then
-        return nil, "OS fingerprinting requires root/administrator privileges.\n\n" ..
-                   "Wireshark is not running with root privileges.\n\n" ..
-                   "Options:\n" ..
-                   "• Run Wireshark from terminal with: sudo wireshark\n" ..
-                   "• Run Wireshark as Administrator (Windows)\n" ..
-                   "• Run nmap manually with: sudo nmap -O -Pn " .. ip .. "\n\n" ..
-                   "Note: OS fingerprinting cannot be performed without root privileges."
-    end
-    
-    -- Build OS fingerprinting command
-    -- -O: OS detection
+    -- Build Vulners scan command
+    -- --script vulners: Run vulners script
+    -- -sV: Version detection (required for vulners)
     -- -Pn: Skip host discovery
     -- Use full path if we have it, otherwise rely on PATH
     local nmap_cmd = (nmap_path and nmap_path ~= "nmap" and nmap_path) or "nmap"
-    local cmd = string.format("%s -O -Pn %s 2>&1", nmap_cmd, ip)
+    local cmd = string.format("%s --script vulners -sV -Pn %s 2>&1", nmap_cmd, ip)
     
-    log_message("Executing nmap OS fingerprinting to: " .. ip .. " (with root privileges)")
+    log_message("Executing nmap Vulners vulnerability scan to: " .. ip)
     
     local handle = io.popen(cmd)
     if not handle then
@@ -6643,13 +7735,19 @@ local function nmap_os_scan(ip)
         return nil, "No output from nmap command."
     end
     
-    -- Check for permission errors (shouldn't happen if we checked root, but verify)
-    if string.find(output, "requires root privileges") or 
-       string.find(output, "Operation not permitted") or
-       string.find(output, "QUITTING") then
-        return nil, "OS fingerprinting failed despite root privileges.\n\n" ..
-                   "This may indicate a system configuration issue.\n\n" ..
-                   "Raw error:\n" .. output
+    -- Check for script not found errors
+    if string.find(output, "vulners") and 
+       (string.find(output, "not found") or string.find(output, "SCRIPT ERROR") or string.find(output, "does not exist")) then
+        return nil, "Vulners script not found.\n\n" ..
+                   "Please install the Vulners NSE script:\n" ..
+                   "https://github.com/vulnersCom/nmap-vulners\n\n" ..
+                   "Raw error:\n" .. string.sub(output, 1, 500)
+    end
+    
+    -- Check for other errors
+    if string.find(output, "QUITTING") or string.find(output, "FATAL") then
+        return nil, "Vulners scan failed.\n\n" ..
+                   "Raw error:\n" .. string.sub(output, 1, 500)
     end
     
     return output, nil
@@ -6708,16 +7806,20 @@ local function format_service_scan_result(output, ip)
     return result
 end
 
--- Format OS fingerprinting results
-local function format_os_scan_result(output, ip)
-    local result = "=== Nmap OS Fingerprinting Results (⚠ Offensive Tool) ===\n\n"
-    result = result .. "⚠ WARNING: This is a network reconnaissance tool.\n"
+-- Format Vulners scan results
+local function format_vulners_scan_result(output, ip)
+    local result = "=== Nmap Vulners Vulnerability Scan Results (⚠ Offensive Tool) ===\n\n"
+    result = result .. "⚠ WARNING: This is a network vulnerability scanning tool.\n"
     result = result .. "Only use on systems you own or have explicit permission to scan.\n\n"
     result = result .. "Target: " .. ip .. "\n"
-    result = result .. "Command: nmap -O -Pn\n"
-    result = result .. "Scan Type: OS Detection\n\n"
+    result = result .. "Command: nmap --script vulners -sV -Pn\n"
+    result = result .. "Scan Type: Vulnerability Detection (Vulners.com database)\n\n"
     result = result .. "--- Output ---\n"
     result = result .. output
+    result = result .. "\n\n--- Additional Information ---\n"
+    result = result .. "Vulners uses the Vulners.com vulnerability database to identify\n"
+    result = result .. "known security vulnerabilities in detected services.\n"
+    result = result .. "For more details, visit: https://vulners.com\n"
     
     return result
 end
@@ -6778,32 +7880,39 @@ local function nmap_service_scan_callback(fieldname, ...)
     show_result_window("Nmap Service Scan: " .. ip, formatted)
 end
 
--- OS fingerprinting callback function
-local function nmap_os_scan_callback(fieldname, ...)
+-- Vulners scan callback function
+local function nmap_vulners_scan_callback(fieldname, ...)
     local fields = {...}
     local ip_raw = get_field_value(fieldname, "display", fields)
     
     if not ip_raw then
-        show_error_window("Nmap OS Fingerprinting", "Could not extract IP address from packet")
+        show_error_window("Nmap Vulners Scan", "Could not extract IP address from packet")
         return
     end
     
     -- Extract IP address from the field value
     local ip = extract_ip_from_string(ip_raw)
     if not ip then
-        show_error_window("Nmap OS Fingerprinting", "Could not extract valid IP address from: " .. ip_raw)
+        show_error_window("Nmap Vulners Scan", "Could not extract valid IP address from: " .. ip_raw)
         return
     end
     
-    -- Execute OS scan
-    local output, err = nmap_os_scan(ip)
+    -- Check if this is an RFC 1918 private address
+    if is_rfc1918_private(ip) then
+        local formatted = format_rfc1918_info(ip)
+        show_result_window("Private IP Address: " .. ip, formatted)
+        return
+    end
+    
+    -- Execute Vulners scan
+    local output, err = nmap_vulners_scan(ip)
     if err then
-        show_error_window("Nmap OS Fingerprinting Error", "Error executing nmap OS fingerprinting:\n" .. err)
+        show_error_window("Nmap Vulners Scan Error", "Error executing nmap Vulners scan:\n" .. err)
         return
     end
     
-    local formatted = format_os_scan_result(output, ip)
-    show_result_window("Nmap OS Fingerprinting: " .. ip, formatted)
+    local formatted = format_vulners_scan_result(output, ip)
+    show_result_window("Nmap Vulners Vulnerability Scan: " .. ip, formatted)
 end
 
 local function email_analysis_callback(...)
@@ -6922,6 +8031,32 @@ if CONFIG.GREYNOISE_ENABLED then
     safe_register_menu("IPv6 Dest/ASK/IP Intelligence (GreyNoise)", function(...) greynoise_ip_callback("ipv6.dst", ...) end, "ipv6.dst")
 end
 
+-- IP Intelligence (AlienVault OTX)
+if CONFIG.OTX_ENABLED then
+    safe_register_menu("IP Src/ASK/IP Intelligence (OTX)", function(...) otx_ip_callback("ip.src", ...) end, "ip.src")
+    safe_register_menu("IP Dest/ASK/IP Intelligence (OTX)", function(...) otx_ip_callback("ip.dst", ...) end, "ip.dst")
+    safe_register_menu("IPv6 Src/ASK/IP Intelligence (OTX)", function(...) otx_ip_callback("ipv6.src", ...) end, "ipv6.src")
+    safe_register_menu("IPv6 Dest/ASK/IP Intelligence (OTX)", function(...) otx_ip_callback("ipv6.dst", ...) end, "ipv6.dst")
+end
+
+-- Host Intelligence (URLhaus)
+if CONFIG.ABUSECH_ENABLED then
+    safe_register_menu("IP Src/ASK/Host Intelligence (URLhaus)", function(...) urlhaus_host_callback("ip.src", ...) end, "ip.src")
+    safe_register_menu("IP Dest/ASK/Host Intelligence (URLhaus)", function(...) urlhaus_host_callback("ip.dst", ...) end, "ip.dst")
+    safe_register_menu("IPv6 Src/ASK/Host Intelligence (URLhaus)", function(...) urlhaus_host_callback("ipv6.src", ...) end, "ipv6.src")
+    safe_register_menu("IPv6 Dest/ASK/Host Intelligence (URLhaus)", function(...) urlhaus_host_callback("ipv6.dst", ...) end, "ipv6.dst")
+end
+
+-- IOC Intelligence (ThreatFox)
+if CONFIG.ABUSECH_ENABLED then
+    safe_register_menu("IP Src/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("ip.src", ...) end, "ip.src")
+    safe_register_menu("IP Dest/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("ip.dst", ...) end, "ip.dst")
+    safe_register_menu("IPv6 Src/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("ipv6.src", ...) end, "ipv6.src")
+    safe_register_menu("IPv6 Dest/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("ipv6.dst", ...) end, "ipv6.dst")
+    safe_register_menu("DNS/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("dns.qry.name", ...) end, "dns.qry.name")
+    safe_register_menu("HTTP/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("http.request.full_uri", ...) end, "http.request.full_uri")
+end
+
 -- DNS Analytics for IP addresses (Reverse DNS + Forward DNS + Registration)
 safe_register_menu("IP Src/ASK/DNS Analytics", function(...) dns_analytics_callback("ip.src", ...) end, "ip.src")
 safe_register_menu("IP Dest/ASK/DNS Analytics", function(...) dns_analytics_callback("ip.dst", ...) end, "ip.dst")
@@ -6929,18 +8064,28 @@ safe_register_menu("IPv6 Src/ASK/DNS Analytics", function(...) dns_analytics_cal
 safe_register_menu("IPv6 Dest/ASK/DNS Analytics", function(...) dns_analytics_callback("ipv6.dst", ...) end, "ipv6.dst")
 
 -- Network Diagnostic Tools (Ping & Traceroute)
+safe_register_menu("IP Src/ASK/Ping Host", function(...) ping_callback("ip.src", ...) end, "ip.src")
+safe_register_menu("IP Src/ASK/Traceroute to Host", function(...) traceroute_callback("ip.src", ...) end, "ip.src")
 safe_register_menu("IP Dest/ASK/Ping Host", function(...) ping_callback("ip.dst", ...) end, "ip.dst")
 safe_register_menu("IP Dest/ASK/Traceroute to Host", function(...) traceroute_callback("ip.dst", ...) end, "ip.dst")
+safe_register_menu("IPv6 Src/ASK/Ping Host", function(...) ping_callback("ipv6.src", ...) end, "ipv6.src")
+safe_register_menu("IPv6 Src/ASK/Traceroute to Host", function(...) traceroute_callback("ipv6.src", ...) end, "ipv6.src")
 safe_register_menu("IPv6 Dest/ASK/Ping Host", function(...) ping_callback("ipv6.dst", ...) end, "ipv6.dst")
 safe_register_menu("IPv6 Dest/ASK/Traceroute to Host", function(...) traceroute_callback("ipv6.dst", ...) end, "ipv6.dst")
 
 -- Nmap Network Scanning Tools (⚠ Offensive - Use Only with Permission)
+safe_register_menu("IP Src/ASK/⚠ SYN Scan (Offensive)", function(...) nmap_syn_scan_callback("ip.src", ...) end, "ip.src")
+safe_register_menu("IP Src/ASK/⚠ Service Scan (Offensive)", function(...) nmap_service_scan_callback("ip.src", ...) end, "ip.src")
+safe_register_menu("IP Src/ASK/⚠ Vulners Scan (Offensive)", function(...) nmap_vulners_scan_callback("ip.src", ...) end, "ip.src")
 safe_register_menu("IP Dest/ASK/⚠ SYN Scan (Offensive)", function(...) nmap_syn_scan_callback("ip.dst", ...) end, "ip.dst")
 safe_register_menu("IP Dest/ASK/⚠ Service Scan (Offensive)", function(...) nmap_service_scan_callback("ip.dst", ...) end, "ip.dst")
-safe_register_menu("IP Dest/ASK/⚠ OS Fingerprinting (Offensive)", function(...) nmap_os_scan_callback("ip.dst", ...) end, "ip.dst")
+safe_register_menu("IP Dest/ASK/⚠ Vulners Scan (Offensive)", function(...) nmap_vulners_scan_callback("ip.dst", ...) end, "ip.dst")
+safe_register_menu("IPv6 Src/ASK/⚠ SYN Scan (Offensive)", function(...) nmap_syn_scan_callback("ipv6.src", ...) end, "ipv6.src")
+safe_register_menu("IPv6 Src/ASK/⚠ Service Scan (Offensive)", function(...) nmap_service_scan_callback("ipv6.src", ...) end, "ipv6.src")
+safe_register_menu("IPv6 Src/ASK/⚠ Vulners Scan (Offensive)", function(...) nmap_vulners_scan_callback("ipv6.src", ...) end, "ipv6.src")
 safe_register_menu("IPv6 Dest/ASK/⚠ SYN Scan (Offensive)", function(...) nmap_syn_scan_callback("ipv6.dst", ...) end, "ipv6.dst")
 safe_register_menu("IPv6 Dest/ASK/⚠ Service Scan (Offensive)", function(...) nmap_service_scan_callback("ipv6.dst", ...) end, "ipv6.dst")
-safe_register_menu("IPv6 Dest/ASK/⚠ OS Fingerprinting (Offensive)", function(...) nmap_os_scan_callback("ipv6.dst", ...) end, "ipv6.dst")
+safe_register_menu("IPv6 Dest/ASK/⚠ Vulners Scan (Offensive)", function(...) nmap_vulners_scan_callback("ipv6.dst", ...) end, "ipv6.dst")
 
 -- URL Categorization (urlscan.io)
 if CONFIG.URLSCAN_ENABLED then
@@ -6952,13 +8097,23 @@ if CONFIG.VIRUSTOTAL_ENABLED then
     safe_register_menu("HTTP/ASK/URL Reputation (VirusTotal)", virustotal_url_callback, "http.request.full_uri")
 end
 
+-- URL Intelligence (AlienVault OTX)
+if CONFIG.OTX_ENABLED then
+    safe_register_menu("HTTP/ASK/URL Intelligence (OTX)", otx_url_callback, "http.request.full_uri")
+end
+
+-- URL Intelligence (URLhaus)
+if CONFIG.ABUSECH_ENABLED then
+    safe_register_menu("HTTP/ASK/URL Intelligence (URLhaus)", urlhaus_url_callback, "http.request.full_uri")
+end
+
 -- Email Analysis
 safe_register_menu("IMF/ASK/Email Analysis", email_analysis_callback, "imf.from")
 safe_register_menu("SMTP/ASK/Email Analysis", email_analysis_callback, "smtp.req.parameter")
     
     -- Log successful loading and menu registrations
     log_message("Analyst's Shark Knife (ASK) plugin v0.2.1 loaded successfully")
-    log_message("Features enabled: RDAP, ARIN RDAP, AbuseIPDB, urlscan.io, VirusTotal, Shodan, IPinfo, GreyNoise, TLS Certificate Analysis, Certificate Validity Check, Certificate Transparency, Email Analysis, DNS Analytics, Ping, Traceroute, Nmap Scans")
+    log_message("Features enabled: RDAP, ARIN RDAP, AbuseIPDB, urlscan.io, VirusTotal, Shodan, IPinfo, GreyNoise, AlienVault OTX, Abuse.ch (URLhaus/ThreatFox), TLS Certificate Analysis, Certificate Validity Check, Certificate Transparency, Email Analysis, DNS Analytics, Ping, Traceroute, Nmap Scans (SYN, Service, Vulners)")
     
     -- Debug: Log menu registration counts
     local menu_count = 0
@@ -6971,6 +8126,9 @@ safe_register_menu("SMTP/ASK/Email Analysis", email_analysis_callback, "smtp.req
     if CONFIG.VIRUSTOTAL_ENABLED then menu_count = menu_count + 3 end
     if CONFIG.SHODAN_ENABLED then menu_count = menu_count + 2 end
     if CONFIG.IPINFO_ENABLED then menu_count = menu_count + 4 end
+    if CONFIG.GREYNOISE_ENABLED then menu_count = menu_count + 4 end
+    if CONFIG.OTX_ENABLED then menu_count = menu_count + 6 end  -- OTX: 4 IP (IPv4/IPv6 Src/Dest) + 1 Domain + 1 URL
+    if CONFIG.ABUSECH_ENABLED then menu_count = menu_count + 11 end  -- Abuse.ch: 1 URL (URLhaus) + 4 Host (URLhaus) + 6 IOC (ThreatFox: 4 IP + 1 DNS + 1 HTTP)
     if CONFIG.URLSCAN_ENABLED then menu_count = menu_count + 1 end
     menu_count = menu_count + 3 -- TLS Certificate Analysis (3 menu items)
     menu_count = menu_count + 2 -- Certificate Validity Check (2 menu items: TLS SNI + HTTP Host)
