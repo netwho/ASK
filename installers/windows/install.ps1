@@ -7,26 +7,87 @@ Write-Host "Version 0.2.1 - Windows" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Check if Wireshark is installed
+# Check if Wireshark is installed (try multiple methods)
+$wiresharkExe = $null
+$wiresharkFound = $false
+
+# Method 1: Check PATH
 $wiresharkPath = Get-Command wireshark -ErrorAction SilentlyContinue
-if (-not $wiresharkPath) {
-    Write-Host "[!] Wireshark is not found in PATH." -ForegroundColor Yellow
-    Write-Host "   Please install Wireshark from https://www.wireshark.org/" -ForegroundColor Yellow
-    exit 1
+if ($wiresharkPath) {
+    $wiresharkExe = $wiresharkPath.Source
+    $wiresharkFound = $true
 }
 
-# Get Wireshark version
-try {
-    $versionOutput = & wireshark -v 2>&1 | Select-Object -First 1
-    $versionMatch = $versionOutput -match '(\d+\.\d+)'
-    if ($versionMatch) {
-        $WIRESHARK_VERSION = $matches[1]
-        Write-Host "[+] Found Wireshark version: $WIRESHARK_VERSION" -ForegroundColor Green
-    } else {
-        Write-Host "[!] Could not determine Wireshark version" -ForegroundColor Yellow
+# Method 2: Check common installation locations
+if (-not $wiresharkFound) {
+    $commonPaths = @(
+        "${env:ProgramFiles}\Wireshark\wireshark.exe",
+        "${env:ProgramFiles(x86)}\Wireshark\wireshark.exe",
+        "${env:LOCALAPPDATA}\Programs\Wireshark\wireshark.exe"
+    )
+    
+    foreach ($path in $commonPaths) {
+        if (Test-Path $path) {
+            $wiresharkExe = $path
+            $wiresharkFound = $true
+            Write-Host "[+] Found Wireshark at: $path" -ForegroundColor Green
+            break
+        }
     }
-} catch {
-    Write-Host "[!] Could not check Wireshark version" -ForegroundColor Yellow
+}
+
+# Method 3: Check registry for installed programs
+if (-not $wiresharkFound) {
+    try {
+        $regPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        
+        foreach ($regPath in $regPaths) {
+            $installed = Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*Wireshark*" }
+            if ($installed -and $installed.InstallLocation) {
+                $exePath = Join-Path $installed.InstallLocation "wireshark.exe"
+                if (Test-Path $exePath) {
+                    $wiresharkExe = $exePath
+                    $wiresharkFound = $true
+                    Write-Host "[+] Found Wireshark via registry: $exePath" -ForegroundColor Green
+                    break
+                }
+            }
+        }
+    } catch {
+        # Registry check failed, continue anyway
+    }
+}
+
+# Get Wireshark version (optional - proceed even if we can't find exe)
+$WIRESHARK_VERSION = $null
+if ($wiresharkExe) {
+    try {
+        $versionOutput = & $wiresharkExe -v 2>&1 | Select-Object -First 1
+        $versionMatch = $versionOutput -match '(\d+\.\d+)'
+        if ($versionMatch) {
+            $WIRESHARK_VERSION = $matches[1]
+            Write-Host "[+] Found Wireshark version: $WIRESHARK_VERSION" -ForegroundColor Green
+        }
+    } catch {
+        # Version check failed, but continue anyway
+    }
+}
+
+# Note: We proceed with installation even if Wireshark.exe isn't found
+# because the plugins directory is standard and Wireshark will load plugins
+# from there when it runs, regardless of where wireshark.exe is located
+Write-Host ""
+if (-not $wiresharkFound) {
+    Write-Host "[!] Could not locate wireshark.exe, but proceeding with installation." -ForegroundColor Yellow
+    Write-Host "    Plugins will be installed to the standard location: $env:APPDATA\Wireshark\plugins" -ForegroundColor Yellow
+    Write-Host "    If Wireshark is installed, it will load the plugins automatically when you restart it." -ForegroundColor Yellow
+    Write-Host ""
+} else {
+    Write-Host "[+] Wireshark detection successful" -ForegroundColor Green
+    Write-Host ""
 }
 
 # Create plugins directory
