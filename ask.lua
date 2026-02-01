@@ -1617,20 +1617,27 @@ local function format_rdap_ip_result(data, ip, raw_response)
             local vcard = entity.vcardArray[2]
             for j, item in ipairs(vcard) do
                 if type(item) == "table" and #item >= 3 then
-                    if item[1] == "fn" then
-                        info.name = item[3]
-                    elseif item[1] == "org" then
-                        info.org = item[3]
-                    elseif item[1] == "email" then
-                        info.email = item[3]
-                    elseif item[1] == "tel" then
-                        info.phone = item[3]
-                    elseif item[1] == "adr" then
-                        local addr = item[3]
-                        if type(addr) == "table" then
-                            addr = table.concat(addr, ", ")
+                    local value = item[3]
+                    -- Skip placeholder "text" values
+                    if value and tostring(value):lower() ~= "text" and tostring(value) ~= "" then
+                        if item[1] == "fn" then
+                            info.name = value
+                        elseif item[1] == "org" then
+                            info.org = value
+                        elseif item[1] == "email" then
+                            info.email = value
+                        elseif item[1] == "tel" then
+                            info.phone = value
+                        elseif item[1] == "adr" then
+                            local addr = value
+                            if type(addr) == "table" then
+                                addr = table.concat(addr, ", ")
+                            end
+                            -- Skip if address is just "text"
+                            if tostring(addr):lower() ~= "text" and tostring(addr) ~= "" then
+                                info.address = addr
+                            end
                         end
-                        info.address = addr
                     end
                 end
             end
@@ -1701,29 +1708,47 @@ local function format_rdap_ip_result(data, ip, raw_response)
     -- Display abuse contacts prominently
     if #abuse_contacts > 0 then
         result = result .. "\n--- Abuse Contact ---\n"
+        local has_abuse_data = false
         for i, entity in ipairs(abuse_contacts) do
             local info = extract_entity_info(entity)
+            local entity_has_data = false
             
-            if info.name then
+            if info.name and tostring(info.name):lower() ~= "text" then
                 result = result .. "Name: " .. info.name .. "\n"
+                entity_has_data = true
             end
-            if info.org then
+            if info.org and tostring(info.org):lower() ~= "text" then
                 result = result .. "Organization: " .. info.org .. "\n"
+                entity_has_data = true
             end
-            if info.email then
+            if info.email and tostring(info.email):lower() ~= "text" then
                 result = result .. "Email: " .. info.email .. "\n"
+                entity_has_data = true
             end
-            if info.phone then
+            if info.phone and tostring(info.phone):lower() ~= "text" then
                 result = result .. "Phone: " .. info.phone .. "\n"
+                entity_has_data = true
             end
-            if info.address then
+            if info.address and tostring(info.address):lower() ~= "text" then
                 result = result .. "Address: " .. info.address .. "\n"
+                entity_has_data = true
+            end
+            
+            if not entity_has_data then
+                result = result .. "No abuse contact data available\n"
             end
             
             if i < #abuse_contacts then
                 result = result .. "\n"
             end
+            has_abuse_data = has_abuse_data or entity_has_data
         end
+        if not has_abuse_data then
+            result = result .. "No abuse contact information available\n"
+        end
+    else
+        result = result .. "\n--- Abuse Contact ---\n"
+        result = result .. "No abuse contact information available\n"
     end
     
     -- Always try fallback extraction from raw JSON response
@@ -1875,24 +1900,35 @@ local function format_rdap_ip_result(data, ip, raw_response)
             end
             if entity.vcardArray and entity.vcardArray[2] then
                 local vcard = entity.vcardArray[2]
+                local has_data = false
                 for j, item in ipairs(vcard) do
                     if type(item) == "table" and #item >= 3 then
-                        if item[1] == "fn" then
-                            result = result .. "Name: " .. item[3] .. "\n"
-                        elseif item[1] == "org" then
-                            result = result .. "Organization: " .. item[3] .. "\n"
-                        elseif item[1] == "adr" then
-                            local addr = item[3]
-                            if type(addr) == "table" then
-                                addr = table.concat(addr, ", ")
+                        local value = item[3]
+                        -- Skip placeholder "text" values
+                        if value and tostring(value):lower() ~= "text" and tostring(value) ~= "" then
+                            has_data = true
+                            if item[1] == "fn" then
+                                result = result .. "Name: " .. value .. "\n"
+                            elseif item[1] == "org" then
+                                result = result .. "Organization: " .. value .. "\n"
+                            elseif item[1] == "adr" then
+                                local addr = value
+                                if type(addr) == "table" then
+                                    addr = table.concat(addr, ", ")
+                                end
+                                if tostring(addr):lower() ~= "text" and tostring(addr) ~= "" then
+                                    result = result .. "Address: " .. addr .. "\n"
+                                end
+                            elseif item[1] == "email" then
+                                result = result .. "Email: " .. value .. "\n"
+                            elseif item[1] == "tel" then
+                                result = result .. "Phone: " .. value .. "\n"
                             end
-                            result = result .. "Address: " .. addr .. "\n"
-                        elseif item[1] == "email" then
-                            result = result .. "Email: " .. item[3] .. "\n"
-                        elseif item[1] == "tel" then
-                            result = result .. "Phone: " .. item[3] .. "\n"
                         end
                     end
+                end
+                if not has_data then
+                    result = result .. "Contact information: No data available\n"
                 end
             end
             -- Also check for simple object properties
@@ -6118,6 +6154,179 @@ end
 -- DNS Analytics Module for IP Addresses
 -------------------------------------------------
 
+-- Check which DNS tool is available (dig preferred, nslookup as fallback)
+local function check_dns_tool_available()
+    local is_windows = package.config:sub(1,1) == "\\"
+    local dig_available = false
+    local nslookup_available = false
+    
+    -- Check for dig
+    if is_windows then
+        local dig_check = io.popen("where dig.exe 2>&1")
+        if dig_check then
+            local dig_result = dig_check:read("*a")
+            dig_check:close()
+            if dig_result and dig_result ~= "" and not string.find(dig_result:lower(), "not found") and not string.find(dig_result:lower(), "could not find") then
+                dig_available = true
+            end
+        end
+        if not dig_available then
+            local dig_check2 = io.popen("where dig 2>&1")
+            if dig_check2 then
+                local dig_result2 = dig_check2:read("*a")
+                dig_check2:close()
+                if dig_result2 and dig_result2 ~= "" and not string.find(dig_result2:lower(), "not found") and not string.find(dig_result2:lower(), "could not find") then
+                    dig_available = true
+                end
+            end
+        end
+    else
+        local dig_check = io.popen("which dig 2>&1")
+        if dig_check then
+            local dig_result = dig_check:read("*a")
+            dig_check:close()
+            if dig_result and dig_result ~= "" and not string.find(dig_result:lower(), "not found") then
+                dig_available = true
+            end
+        end
+    end
+    
+    -- Check for nslookup (especially useful on Windows)
+    if is_windows then
+        local nslookup_check = io.popen("where nslookup.exe 2>&1")
+        if nslookup_check then
+            local nslookup_result = nslookup_check:read("*a")
+            nslookup_check:close()
+            if nslookup_result and nslookup_result ~= "" and not string.find(nslookup_result:lower(), "not found") and not string.find(nslookup_result:lower(), "could not find") then
+                nslookup_available = true
+            end
+        end
+        if not nslookup_available then
+            local nslookup_check2 = io.popen("where nslookup 2>&1")
+            if nslookup_check2 then
+                local nslookup_result2 = nslookup_check2:read("*a")
+                nslookup_check2:close()
+                if nslookup_result2 and nslookup_result2 ~= "" and not string.find(nslookup_result2:lower(), "not found") and not string.find(nslookup_result2:lower(), "could not find") then
+                    nslookup_available = true
+                end
+            end
+        end
+    else
+        local nslookup_check = io.popen("which nslookup 2>&1")
+        if nslookup_check then
+            local nslookup_result = nslookup_check:read("*a")
+            nslookup_check:close()
+            if nslookup_result and nslookup_result ~= "" and not string.find(nslookup_result:lower(), "not found") then
+                nslookup_available = true
+            end
+        end
+    end
+    
+    return dig_available, nslookup_available
+end
+
+-- Parse nslookup output for reverse DNS (PTR)
+local function parse_nslookup_ptr(output)
+    local domains = {}
+    -- nslookup -type=PTR returns lines like:
+    -- Name: example.com
+    -- or just the domain name on some systems
+    for line in string.gmatch(output, "([^\r\n]+)") do
+        line = string.gsub(line, "^%s+", "")
+        line = string.gsub(line, "%s+$", "")
+        -- Extract domain from "Name: domain.com" format
+        local domain = string.match(line, "^[Nn]ame:%s*(.+)")
+        if not domain then
+            -- Try to match just a domain name (if it looks like a domain)
+            if string.find(line, "%.") and not string.find(line:lower(), "server") and 
+               not string.find(line:lower(), "address") and not string.find(line:lower(), "can't find") and
+               not string.find(line:lower(), "non-existent") and not string.find(line:lower(), "error") then
+                domain = line
+            end
+        end
+        if domain then
+            domain = string.gsub(domain, "%.$", "")  -- Remove trailing dot
+            if domain ~= "" and domain ~= "Name" then
+                table.insert(domains, domain)
+            end
+        end
+    end
+    return domains
+end
+
+-- Parse nslookup output for forward DNS records
+local function parse_nslookup_forward(output, record_type)
+    local records = {}
+    -- nslookup output format varies by record type
+    -- For A records: "Address: 1.2.3.4" or "Addresses: 1.2.3.4, 2.3.4.5"
+    -- For MX: "mail exchanger = 10 mail.example.com"
+    -- For NS: "nameserver = ns.example.com"
+    -- For TXT: "text = "value""
+    
+    for line in string.gmatch(output, "([^\r\n]+)") do
+        line = string.gsub(line, "^%s+", "")
+        line = string.gsub(line, "%s+$", "")
+        
+        -- Skip header lines
+        if string.find(line:lower(), "server") or string.find(line:lower(), "can't find") or
+           string.find(line:lower(), "non-existent") or string.find(line:lower(), "***") then
+            -- Skip
+        elseif record_type == "A" or record_type == "AAAA" then
+            -- Extract IP addresses
+            local addr = string.match(line, "^[Aa]ddress(es)?:%s*(.+)")
+            if addr then
+                -- Handle multiple addresses separated by commas
+                for ip in string.gmatch(addr, "([%d%.:a-fA-F]+)") do
+                    if is_valid_ip(ip) then
+                        table.insert(records, ip)
+                    end
+                end
+            elseif is_valid_ip(line) then
+                table.insert(records, line)
+            end
+        elseif record_type == "MX" then
+            -- Extract mail exchanger: "mail exchanger = 10 mail.example.com"
+            local mx = string.match(line, "mail%s+exchanger%s*=%s*(.+)")
+            if mx then
+                mx = string.gsub(mx, "^%s+", "")
+                mx = string.gsub(mx, "%s+$", "")
+                table.insert(records, mx)
+            end
+        elseif record_type == "NS" then
+            -- Extract nameserver: "nameserver = ns.example.com"
+            local ns = string.match(line, "nameserver%s*=%s*(.+)")
+            if ns then
+                ns = string.gsub(ns, "^%s+", "")
+                ns = string.gsub(ns, "%s+$", "")
+                ns = string.gsub(ns, "%.$", "")
+                table.insert(records, ns)
+            end
+        elseif record_type == "TXT" then
+            -- Extract text: 'text = "value"'
+            local txt = string.match(line, 'text%s*=%s*"([^"]+)"')
+            if txt then
+                table.insert(records, txt)
+            end
+        elseif record_type == "SOA" then
+            -- SOA records are complex, extract the whole line if it contains domain info
+            if string.find(line, "%.") and not string.find(line:lower(), "server") then
+                table.insert(records, line)
+            end
+        elseif record_type == "CNAME" then
+            -- CNAME: "canonical name = example.com"
+            local cname = string.match(line, "canonical%s+name%s*=%s*(.+)")
+            if cname then
+                cname = string.gsub(cname, "^%s+", "")
+                cname = string.gsub(cname, "%s+$", "")
+                cname = string.gsub(cname, "%.$", "")
+                table.insert(records, cname)
+            end
+        end
+    end
+    
+    return records
+end
+
 -- Perform reverse DNS lookup (PTR record) to get domain name from IP
 local function reverse_dns_lookup(ip)
     if not is_valid_ip(ip) then
@@ -6131,43 +6340,73 @@ local function reverse_dns_lookup(ip)
         return cached, nil
     end
     
-    -- Use dig for reverse DNS lookup (more reliable than nslookup)
-    -- For IPv4: dig -x IP
-    -- For IPv6: dig -x IP6 (with proper formatting)
+    -- Check which DNS tool is available
+    local dig_available, nslookup_available = check_dns_tool_available()
+    
+    if not dig_available and not nslookup_available then
+        return nil, "No DNS lookup tool found. Please install 'dig' (BIND tools) or ensure 'nslookup' is available."
+    end
+    
     local cmd
-    if is_valid_ipv4(ip) then
-        cmd = string.format("dig +short -x %s 2>&1", ip)
+    local use_nslookup = not dig_available
+    
+    if use_nslookup then
+        -- Use nslookup for reverse DNS
+        cmd = string.format("nslookup -type=PTR %s 2>&1", ip)
     else
-        -- IPv6: need to format properly for dig
-        -- Convert to reverse format: 2001:db8::1 -> 1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa
-        -- But dig can handle IPv6 directly with -x
-        cmd = string.format("dig +short -x %s 2>&1", ip)
+        -- Use dig for reverse DNS lookup (preferred, more reliable)
+        if is_valid_ipv4(ip) then
+            cmd = string.format("dig +short -x %s 2>&1", ip)
+        else
+            -- IPv6: dig can handle IPv6 directly with -x
+            cmd = string.format("dig +short -x %s 2>&1", ip)
+        end
     end
     
     log_message("Performing reverse DNS lookup for IP: " .. ip)
+    log_message("Using tool: " .. (use_nslookup and "nslookup" or "dig"))
     log_message("Command: " .. cmd)
     
     local handle = io.popen(cmd)
     if not handle then
-        return nil, "Failed to execute dig command. Make sure dig is installed."
+        return nil, "Failed to execute DNS lookup command."
     end
     
     local output = handle:read("*a")
     handle:close()
     
+    -- Check for common error messages
+    if output and (string.find(output:lower(), "not recognized") or 
+                   string.find(output:lower(), "not found") or
+                   string.find(output:lower(), "command not found") or
+                   string.find(output:lower(), "could not find")) then
+        return nil, "DNS lookup tool not found. Please install 'dig' (BIND tools) or ensure 'nslookup' is available."
+    end
+    
     if not output or output == "" then
         return nil, "No reverse DNS record found for IP: " .. ip
     end
     
-    -- Parse output - dig returns domain name(s), one per line
+    -- Parse output based on tool used
     local domains = {}
-    for line in string.gmatch(output, "([^\r\n]+)") do
-        line = string.gsub(line, "^%s+", "")  -- Trim leading whitespace
-        line = string.gsub(line, "%s+$", "")  -- Trim trailing whitespace
-        -- Remove trailing dot if present
-        line = string.gsub(line, "%.$", "")
-        if line ~= "" and not string.find(line, "failed") and not string.find(line, "error") then
-            table.insert(domains, line)
+    if use_nslookup then
+        domains = parse_nslookup_ptr(output)
+    else
+        -- Parse dig output - dig returns domain name(s), one per line
+        for line in string.gmatch(output, "([^\r\n]+)") do
+            line = string.gsub(line, "^%s+", "")  -- Trim leading whitespace
+            line = string.gsub(line, "%s+$", "")  -- Trim trailing whitespace
+            -- Remove trailing dot if present
+            line = string.gsub(line, "%.$", "")
+            -- Skip error messages
+            if line ~= "" and 
+               not string.find(line:lower(), "failed") and 
+               not string.find(line:lower(), "error") and
+               not string.find(line:lower(), "not recognized") and
+               not string.find(line:lower(), "not found") and
+               not string.find(line:lower(), "command not found") then
+                table.insert(domains, line)
+            end
         end
     end
     
@@ -6203,28 +6442,65 @@ local function dns_lookup(domain, record_type)
         return cached, nil
     end
     
-    local cmd = string.format("dig +short %s %s 2>&1", domain, record_type)
+    -- Check which DNS tool is available
+    local dig_available, nslookup_available = check_dns_tool_available()
+    
+    if not dig_available and not nslookup_available then
+        return nil, "No DNS lookup tool found. Please install 'dig' (BIND tools) or ensure 'nslookup' is available."
+    end
+    
+    local cmd
+    local use_nslookup = not dig_available
+    
+    if use_nslookup then
+        -- Use nslookup for DNS lookup
+        cmd = string.format("nslookup -type=%s %s 2>&1", record_type, domain)
+    else
+        -- Use dig for DNS lookup (preferred)
+        cmd = string.format("dig +short %s %s 2>&1", domain, record_type)
+    end
+    
     log_message("DNS lookup: " .. record_type .. " record for " .. domain)
+    log_message("Using tool: " .. (use_nslookup and "nslookup" or "dig"))
     
     local handle = io.popen(cmd)
     if not handle then
-        return nil, "Failed to execute dig command"
+        return nil, "Failed to execute DNS lookup command"
     end
     
     local output = handle:read("*a")
     handle:close()
     
+    -- Check for common error messages
+    if output and (string.find(output:lower(), "not recognized") or 
+                   string.find(output:lower(), "not found") or
+                   string.find(output:lower(), "command not found") or
+                   string.find(output:lower(), "could not find")) then
+        return nil, "DNS lookup tool not found. Please install 'dig' (BIND tools) or ensure 'nslookup' is available."
+    end
+    
     -- Initialize records as empty table
     local records = {}
     
     if output and output ~= "" then
-        -- Parse output
-        for line in string.gmatch(output, "([^\r\n]+)") do
-            line = string.gsub(line, "^%s+", "")
-            line = string.gsub(line, "%s+$", "")
-            line = string.gsub(line, "%.$", "")  -- Remove trailing dot
-            if line ~= "" and not string.find(line, "failed") and not string.find(line, "error") then
-                table.insert(records, line)
+        if use_nslookup then
+            -- Parse nslookup output
+            records = parse_nslookup_forward(output, record_type)
+        else
+            -- Parse dig output
+            for line in string.gmatch(output, "([^\r\n]+)") do
+                line = string.gsub(line, "^%s+", "")
+                line = string.gsub(line, "%s+$", "")
+                line = string.gsub(line, "%.$", "")  -- Remove trailing dot
+                -- Skip error messages
+                if line ~= "" and 
+                   not string.find(line:lower(), "failed") and 
+                   not string.find(line:lower(), "error") and
+                   not string.find(line:lower(), "not recognized") and
+                   not string.find(line:lower(), "not found") and
+                   not string.find(line:lower(), "command not found") then
+                    table.insert(records, line)
+                end
             end
         end
     end
@@ -6318,21 +6594,37 @@ local function format_dns_analytics_result(data, ip)
     
     -- Reverse DNS (PTR Records)
     result = result .. "--- Reverse DNS (PTR Records) ---\n"
-    if data.reverse_dns and data.reverse_dns.ptr_records then
+    if data.reverse_dns_error then
+        -- Check if error indicates DNS tool is not available
+        if string.find(data.reverse_dns_error:lower(), "not found") or 
+           string.find(data.reverse_dns_error:lower(), "not recognized") or
+           string.find(data.reverse_dns_error:lower(), "command not found") then
+            result = result .. "ERROR: DNS lookup tool not available\n"
+            result = result .. "\nDNS Analytics requires 'dig' or 'nslookup'.\n"
+            result = result .. "On Windows, 'nslookup' should be available by default.\n"
+            result = result .. "Please install a DNS tool and restart Wireshark.\n"
+        else
+            result = result .. "Error: " .. data.reverse_dns_error .. "\n"
+        end
+    elseif data.reverse_dns and data.reverse_dns.ptr_records then
         for i, ptr in ipairs(data.reverse_dns.ptr_records) do
             result = result .. "PTR " .. i .. ": " .. ptr .. "\n"
         end
         if data.reverse_dns.primary_domain then
             result = result .. "\nPrimary Domain: " .. data.reverse_dns.primary_domain .. "\n"
         end
-    elseif data.reverse_dns_error then
-        result = result .. "No PTR record found: " .. data.reverse_dns_error .. "\n"
     else
         result = result .. "No PTR record found\n"
     end
     
     -- Forward DNS Records
-    if data.forward_dns and next(data.forward_dns) then
+    if data.reverse_dns_error and (string.find(data.reverse_dns_error:lower(), "not found") or 
+                                    string.find(data.reverse_dns_error:lower(), "not recognized") or
+                                    string.find(data.reverse_dns_error:lower(), "command not found")) then
+        -- Skip forward DNS if DNS tool is not available
+        result = result .. "\n--- Forward DNS Records ---\n"
+        result = result .. "Cannot perform forward DNS lookups: DNS lookup tool not available\n"
+    elseif data.forward_dns and next(data.forward_dns) then
         result = result .. "\n--- Forward DNS Records ---\n"
         
         -- A Records (IPv4)
@@ -6431,7 +6723,13 @@ local function format_dns_analytics_result(data, ip)
     end
     
     -- Registration Information (RDAP)
-    if data.registration_info then
+    if data.reverse_dns_error and (string.find(data.reverse_dns_error:lower(), "not found") or 
+                                    string.find(data.reverse_dns_error:lower(), "not recognized") or
+                                    string.find(data.reverse_dns_error:lower(), "command not found")) then
+        -- Skip registration info if DNS tool failed
+        result = result .. "\n--- Domain Registration Information ---\n"
+        result = result .. "Cannot retrieve registration info: DNS lookup tool not available\n"
+    elseif data.registration_info then
         result = result .. "\n--- Domain Registration Information (RDAP) ---\n"
         
         -- Extract registration date and calculate domain age
@@ -6546,23 +6844,30 @@ local function dns_analytics_callback(fieldname, ...)
         return
     end
     
-    -- Check if dig is available
-    local dig_check = io.popen("which dig 2>&1")
-    if dig_check then
-        local dig_result = dig_check:read("*a")
-        dig_check:close()
-        if not dig_result or dig_result == "" or string.find(dig_result, "not found") then
-            show_error_window("DNS Analytics Error", 
-                           "dig command not found.\n\n" ..
-                           "DNS analytics requires 'dig' (DNS lookup utility).\n\n" ..
-                           "Installation:\n" ..
-                           "• macOS: brew install bind (or use system dig)\n" ..
-                           "• Linux: sudo apt-get install dnsutils (Debian/Ubuntu)\n" ..
-                           "         sudo yum install bind-utils (RHEL/CentOS)\n" ..
-                           "• Windows: Install BIND tools or use WSL\n\n" ..
-                           "After installation, restart Wireshark.")
-            return
+    -- Check which DNS tool is available
+    local dig_available, nslookup_available = check_dns_tool_available()
+    
+    if not dig_available and not nslookup_available then
+        local is_windows = package.config:sub(1,1) == "\\"
+        local error_msg = "No DNS lookup tool found.\n\n" ..
+                         "DNS analytics requires 'dig' or 'nslookup'.\n\n"
+        if is_windows then
+            error_msg = error_msg ..
+                       "On Windows, 'nslookup' should be available by default.\n" ..
+                       "If not found, you can install:\n" ..
+                       "• BIND tools from https://www.isc.org/download/\n" ..
+                       "• OR use Chocolatey: choco install bind-toolsonly\n" ..
+                       "• OR use WSL (Windows Subsystem for Linux)\n"
+        else
+            error_msg = error_msg ..
+                       "Installation:\n" ..
+                       "• macOS: brew install bind (or use system dig/nslookup)\n" ..
+                       "• Linux: sudo apt-get install dnsutils (Debian/Ubuntu)\n" ..
+                       "         sudo yum install bind-utils (RHEL/CentOS)\n"
         end
+        error_msg = error_msg .. "\nAfter installation, restart Wireshark."
+        show_error_window("DNS Analytics Error", error_msg)
+        return
     end
     
     local data, err = lookup_dns_analytics(ip)
