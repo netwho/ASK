@@ -228,6 +228,10 @@ Use the provided setup scripts:
 
 This project is licensed under the GNU General Public License v2.0 - see the [LICENSE](LICENSE) file for details.
 
+---
+
+With love for the Wireshark Community ❤️
+
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
