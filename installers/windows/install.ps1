@@ -298,7 +298,7 @@ if ($hasDownloadTool) {
                 Write-Host ""
                 Write-Host "The JSON library improves parsing for:" -ForegroundColor Cyan
                 Write-Host "  - urlscan.io search results" -ForegroundColor Cyan
-                Write-Host "  - Complex JSON responses from all APIs (AbuseIPDB, VirusTotal, Shodan, etc.)" -ForegroundColor Cyan
+                Write-Host '  - Complex JSON responses from all APIs (AbuseIPDB, VirusTotal, Shodan, etc.)' -ForegroundColor Cyan
                 Write-Host "  - Nested arrays and objects" -ForegroundColor Cyan
             } else {
                 Write-Host "⚠️  Failed to download json.lua" -ForegroundColor Yellow
@@ -312,7 +312,7 @@ if ($hasDownloadTool) {
     Write-Host ""
     Write-Host "The JSON library improves parsing performance for:" -ForegroundColor Cyan
     Write-Host "  - urlscan.io search results" -ForegroundColor Cyan
-    Write-Host "  - Complex JSON responses from all APIs (AbuseIPDB, VirusTotal, Shodan, IPinfo, GreyNoise, OTX, Abuse.ch)" -ForegroundColor Cyan
+    Write-Host '  - Complex JSON responses from all APIs (AbuseIPDB, VirusTotal, Shodan, IPinfo, GreyNoise, OTX, Abuse.ch)' -ForegroundColor Cyan
     Write-Host "  - Nested arrays and objects" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "To install manually:" -ForegroundColor Yellow
