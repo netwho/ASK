@@ -38,22 +38,26 @@ if (-not $wiresharkFound) {
 
 # Method 3: Check registry for installed programs
 if (-not $wiresharkFound) {
-    $regPaths = @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-    )
-    
-    foreach ($regPath in $regPaths) {
-        $installed = Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*Wireshark*" }
-        if ($installed -and $installed.InstallLocation) {
-            $exePath = Join-Path $installed.InstallLocation "wireshark.exe"
-            if (Test-Path $exePath) {
-                $wiresharkExe = $exePath
-                $wiresharkFound = $true
-                Write-Host "[+] Found Wireshark via registry: $exePath" -ForegroundColor Green
-                break
+    try {
+        $regPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+        )
+        
+        foreach ($regPath in $regPaths) {
+            $installed = Get-ItemProperty $regPath -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "*Wireshark*" }
+            if ($installed -and $installed.InstallLocation) {
+                $exePath = Join-Path $installed.InstallLocation "wireshark.exe"
+                if (Test-Path $exePath) {
+                    $wiresharkExe = $exePath
+                    $wiresharkFound = $true
+                    Write-Host "[+] Found Wireshark via registry: $exePath" -ForegroundColor Green
+                    break
+                }
             }
         }
+    } catch {
+        # Registry check failed, continue anyway
     }
 }
 
