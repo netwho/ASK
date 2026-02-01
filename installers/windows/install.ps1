@@ -10,7 +10,7 @@ Write-Host ""
 # Check if Wireshark is installed
 $wiresharkPath = Get-Command wireshark -ErrorAction SilentlyContinue
 if (-not $wiresharkPath) {
-    Write-Host "⚠️  Wireshark is not found in PATH." -ForegroundColor Yellow
+    Write-Host "[!] Wireshark is not found in PATH." -ForegroundColor Yellow
     Write-Host "   Please install Wireshark from https://www.wireshark.org/" -ForegroundColor Yellow
     exit 1
 }
@@ -21,12 +21,12 @@ try {
     $versionMatch = $versionOutput -match '(\d+\.\d+)'
     if ($versionMatch) {
         $WIRESHARK_VERSION = $matches[1]
-        Write-Host "✓ Found Wireshark version: $WIRESHARK_VERSION" -ForegroundColor Green
+        Write-Host "[+] Found Wireshark version: $WIRESHARK_VERSION" -ForegroundColor Green
     } else {
-        Write-Host "⚠️  Could not determine Wireshark version" -ForegroundColor Yellow
+        Write-Host "[!] Could not determine Wireshark version" -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "⚠️  Could not check Wireshark version" -ForegroundColor Yellow
+    Write-Host "[!] Could not check Wireshark version" -ForegroundColor Yellow
 }
 
 # Create plugins directory
@@ -34,7 +34,7 @@ $PLUGINS_DIR = "$env:APPDATA\Wireshark\plugins"
 if (-not (Test-Path $PLUGINS_DIR)) {
     New-Item -ItemType Directory -Path $PLUGINS_DIR -Force | Out-Null
 }
-Write-Host "✓ Created plugins directory: $PLUGINS_DIR" -ForegroundColor Green
+Write-Host "[+] Created plugins directory: $PLUGINS_DIR" -ForegroundColor Green
 
 # Get script and project directories
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -67,7 +67,7 @@ if (Test-Path $pluginDest) {
             
             if ($sourceVer -gt $installedVer) {
                 Write-Host ""
-                Write-Host "📦 Existing installation detected:" -ForegroundColor Cyan
+                Write-Host "[*] Existing installation detected:" -ForegroundColor Cyan
                 Write-Host "   Installed version: $installedVersion" -ForegroundColor Yellow
                 Write-Host "   Available version: $sourceVersion" -ForegroundColor Green
                 $upgrade = Read-Host "Upgrade to version $sourceVersion? (y/n)"
@@ -76,7 +76,7 @@ if (Test-Path $pluginDest) {
                     exit 0
                 }
             } elseif ($sourceVer -eq $installedVer) {
-                Write-Host "✓ Already installed version $installedVersion" -ForegroundColor Green
+                Write-Host "[+] Already installed version $installedVersion" -ForegroundColor Green
                 $reinstall = Read-Host "Reinstall anyway? (y/n)"
                 if ($reinstall -ne "y" -and $reinstall -ne "Y") {
                     Write-Host "Skipping reinstallation." -ForegroundColor Yellow
@@ -95,7 +95,7 @@ if (Test-Path $pluginDest) {
             $sourceTime = (Get-Item $pluginSource).LastWriteTime
             if ($sourceTime -gt $installedTime) {
                 Write-Host ""
-                Write-Host "📦 Existing installation detected (newer source file found)" -ForegroundColor Cyan
+                Write-Host "[*] Existing installation detected (newer source file found)" -ForegroundColor Cyan
                 $upgrade = Read-Host "Upgrade installation? (y/n)"
                 if ($upgrade -ne "y" -and $upgrade -ne "Y") {
                     Write-Host "Skipping upgrade. Installation cancelled." -ForegroundColor Yellow
@@ -112,12 +112,12 @@ if (-not $skipAskInstall) {
         Copy-Item $pluginSource $pluginDest -Force
         $sourceVersion = Extract-Version -FilePath $pluginSource
         if ($sourceVersion) {
-            Write-Host "✓ Installed ask.lua version $sourceVersion" -ForegroundColor Green
+            Write-Host "[+] Installed ask.lua version $sourceVersion" -ForegroundColor Green
         } else {
-            Write-Host "✓ Installed ask.lua" -ForegroundColor Green
+            Write-Host "[+] Installed ask.lua" -ForegroundColor Green
         }
     } else {
-        Write-Host "⚠️  ask.lua not found in installer directory" -ForegroundColor Yellow
+        Write-Host "[!] ask.lua not found in installer directory" -ForegroundColor Yellow
         exit 1
     }
 }
@@ -144,16 +144,16 @@ if (Test-Path $scanDetectorSource) {
                     $upgradeSd = Read-Host "Upgrade Scan Detector to version $sourceSdVersion? (y/n)"
                     if ($upgradeSd -eq "y" -or $upgradeSd -eq "Y") {
                         Copy-Item $scanDetectorSource $scanDetectorDest -Force
-                        Write-Host "✓ Upgraded scan_detector.lua to version $sourceSdVersion" -ForegroundColor Green
+                        Write-Host "[+] Upgraded scan_detector.lua to version $sourceSdVersion" -ForegroundColor Green
                     } else {
                         Write-Host "Skipping Scan Detector upgrade." -ForegroundColor Yellow
                     }
                 } elseif ($sourceSdVer -eq $installedSdVer) {
-                    Write-Host "✓ Scan Detector already installed (version $installedSdVersion)" -ForegroundColor Green
+                    Write-Host "[+] Scan Detector already installed (version $installedSdVersion)" -ForegroundColor Green
                     $reinstallSd = Read-Host "Reinstall Scan Detector? (y/n)"
                     if ($reinstallSd -eq "y" -or $reinstallSd -eq "Y") {
                         Copy-Item $scanDetectorSource $scanDetectorDest -Force
-                        Write-Host "✓ Reinstalled scan_detector.lua" -ForegroundColor Green
+                        Write-Host "[+] Reinstalled scan_detector.lua" -ForegroundColor Green
                     }
                 }
             } catch {
@@ -161,17 +161,17 @@ if (Test-Path $scanDetectorSource) {
                 $installedSdTime = (Get-Item $scanDetectorDest).LastWriteTime
                 $sourceSdTime = (Get-Item $scanDetectorSource).LastWriteTime
                 if ($sourceSdTime -gt $installedSdTime) {
-                    Write-Host "📦 Scan Detector newer version available" -ForegroundColor Cyan
+                    Write-Host "[*] Scan Detector newer version available" -ForegroundColor Cyan
                     $upgradeSd = Read-Host "Upgrade Scan Detector? (y/n)"
                     if ($upgradeSd -eq "y" -or $upgradeSd -eq "Y") {
                         Copy-Item $scanDetectorSource $scanDetectorDest -Force
-                        Write-Host "✓ Upgraded scan_detector.lua" -ForegroundColor Green
+                        Write-Host "[+] Upgraded scan_detector.lua" -ForegroundColor Green
                     }
                 } else {
                     $installScanDetector = Read-Host "Install Scan Detector plugin? (y/n)"
                     if ($installScanDetector -eq "y" -or $installScanDetector -eq "Y") {
                         Copy-Item $scanDetectorSource $scanDetectorDest -Force
-                        Write-Host "✓ Installed scan_detector.lua" -ForegroundColor Green
+                        Write-Host "[+] Installed scan_detector.lua" -ForegroundColor Green
                     }
                 }
             }
@@ -180,7 +180,7 @@ if (Test-Path $scanDetectorSource) {
             $installedSdTime = (Get-Item $scanDetectorDest).LastWriteTime
             $sourceSdTime = (Get-Item $scanDetectorSource).LastWriteTime
             if ($sourceSdTime -gt $installedSdTime) {
-                Write-Host "📦 Scan Detector newer version available" -ForegroundColor Cyan
+                Write-Host "[*] Scan Detector newer version available" -ForegroundColor Cyan
                 $upgradeSd = Read-Host "Upgrade Scan Detector? (y/n)"
                 if ($upgradeSd -eq "y" -or $upgradeSd -eq "Y") {
                     Copy-Item $scanDetectorSource $scanDetectorDest -Force
@@ -200,14 +200,14 @@ if (Test-Path $scanDetectorSource) {
             Copy-Item $scanDetectorSource $scanDetectorDest -Force
             $sourceSdVersion = Extract-Version -FilePath $scanDetectorSource
             if ($sourceSdVersion) {
-                Write-Host "✓ Installed scan_detector.lua version $sourceSdVersion" -ForegroundColor Green
+                Write-Host "[+] Installed scan_detector.lua version $sourceSdVersion" -ForegroundColor Green
             } else {
-                Write-Host "✓ Installed scan_detector.lua" -ForegroundColor Green
+                Write-Host "[+] Installed scan_detector.lua" -ForegroundColor Green
             }
         }
     }
 } else {
-    Write-Host "⚠️  scan_detector.lua not found in Scan_Detector directory" -ForegroundColor Yellow
+    Write-Host "[!] scan_detector.lua not found in Scan_Detector directory" -ForegroundColor Yellow
 }
 
 # Check for optional tools
@@ -217,9 +217,9 @@ Write-Host "Checking optional tools..." -ForegroundColor Cyan
 # Check OpenSSL
 $openssl = Get-Command openssl -ErrorAction SilentlyContinue
 if ($openssl) {
-    Write-Host "✓ openssl found" -ForegroundColor Green
+    Write-Host "[+] openssl found" -ForegroundColor Green
 } else {
-    Write-Host "⚠️  openssl not found (required for Certificate Validity Check)" -ForegroundColor Yellow
+    Write-Host "[!] openssl not found (required for Certificate Validity Check)" -ForegroundColor Yellow
     Write-Host "   Install options:" -ForegroundColor Yellow
     Write-Host "   - Git for Windows (includes OpenSSL)" -ForegroundColor Yellow
     Write-Host "   - Standalone: https://slproweb.com/products/Win32OpenSSL.html" -ForegroundColor Yellow
@@ -229,9 +229,9 @@ if ($openssl) {
 # Check dig
 $dig = Get-Command dig -ErrorAction SilentlyContinue
 if ($dig) {
-    Write-Host "✓ dig found" -ForegroundColor Green
+    Write-Host "[+] dig found" -ForegroundColor Green
 } else {
-    Write-Host "⚠️  dig not found (required for DNS Analytics)" -ForegroundColor Yellow
+    Write-Host "[!] dig not found (required for DNS Analytics)" -ForegroundColor Yellow
     Write-Host "   Install options:" -ForegroundColor Yellow
     Write-Host "   - BIND Tools: https://www.isc.org/download/" -ForegroundColor Yellow
     Write-Host "   - WSL (Windows Subsystem for Linux)" -ForegroundColor Yellow
@@ -241,9 +241,9 @@ if ($dig) {
 # Check nmap
 $nmap = Get-Command nmap -ErrorAction SilentlyContinue
 if ($nmap) {
-    Write-Host "✓ nmap found" -ForegroundColor Green
+    Write-Host "[+] nmap found" -ForegroundColor Green
 } else {
-    Write-Host "⚠️  nmap not found (required for Network Scanning)" -ForegroundColor Yellow
+    Write-Host "[!] nmap not found (required for Network Scanning)" -ForegroundColor Yellow
     Write-Host "   Install options:" -ForegroundColor Yellow
     Write-Host "   - Official: https://nmap.org/download.html" -ForegroundColor Yellow
     Write-Host "   - Chocolatey: choco install nmap" -ForegroundColor Yellow
@@ -252,17 +252,17 @@ if ($nmap) {
 # Check curl
 $curl = Get-Command curl -ErrorAction SilentlyContinue
 if ($curl) {
-    Write-Host "✓ curl found" -ForegroundColor Green
+    Write-Host "[+] curl found" -ForegroundColor Green
 } else {
-    Write-Host "⚠️  curl not found (required for API requests)" -ForegroundColor Yellow
+    Write-Host "[!] curl not found (required for API requests)" -ForegroundColor Yellow
     Write-Host "   Usually pre-installed on Windows 10+" -ForegroundColor Yellow
 }
 
 # Offer to install JSON library (check for curl/Invoke-WebRequest first)
 Write-Host ""
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
-Write-Host "📚 JSON Library Installation (Recommended)" -ForegroundColor Cyan
-Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+Write-Host "JSON Library Installation (Recommended)" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
 $hasDownloadTool = $false
 $downloadTool = ""
 
@@ -294,21 +294,21 @@ if ($hasDownloadTool) {
                 Invoke-WebRequest -Uri $jsonUrl -OutFile $jsonDest -UseBasicParsing
             }
             if (Test-Path $jsonDest) {
-                Write-Host "✓ Installed json.lua" -ForegroundColor Green
+                Write-Host "[+] Installed json.lua" -ForegroundColor Green
                 Write-Host ""
                 Write-Host "The JSON library improves parsing for:" -ForegroundColor Cyan
                 Write-Host "  - urlscan.io search results" -ForegroundColor Cyan
                 Write-Host '  - Complex JSON responses from all APIs (AbuseIPDB, VirusTotal, Shodan, etc.)' -ForegroundColor Cyan
                 Write-Host "  - Nested arrays and objects" -ForegroundColor Cyan
             } else {
-                Write-Host "⚠️  Failed to download json.lua" -ForegroundColor Yellow
+                Write-Host "[!] Failed to download json.lua" -ForegroundColor Yellow
             }
         } catch {
-            Write-Host "⚠️  Failed to download json.lua: $_" -ForegroundColor Yellow
+            Write-Host "[!] Failed to download json.lua: $_" -ForegroundColor Yellow
         }
     }
 } else {
-    Write-Host "⚠️  curl not found - cannot auto-install JSON library" -ForegroundColor Yellow
+    Write-Host "[!] curl not found - cannot auto-install JSON library" -ForegroundColor Yellow
     Write-Host ""
     Write-Host "The JSON library improves parsing performance for:" -ForegroundColor Cyan
     Write-Host "  - urlscan.io search results" -ForegroundColor Cyan
@@ -332,7 +332,7 @@ if ($runSetup -eq "y" -or $runSetup -eq "Y") {
     if (Test-Path $setupScript) {
         & $setupScript
     } else {
-        Write-Host "⚠️  setup_api_keys.ps1 not found in installer directory" -ForegroundColor Yellow
+        Write-Host "[!] setup_api_keys.ps1 not found in installer directory" -ForegroundColor Yellow
     }
 }
 
