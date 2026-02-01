@@ -50,23 +50,28 @@ Right-click on packet field → ASK → [Feature]
 ## 📷 Screenshots
 
 ### Context Menu
-![ASK Context Menu](screenshots/screenshot-menu.png)
+<img src="screenshots/screenshot-menu.png" alt="ASK Context Menu" width="800"/>
+
 *Right-click on any packet field to access ASK features*
 
 ### IP Reputation Lookup
-![IP Reputation](screenshots/screenshot-ip-reputation.png)
+<img src="screenshots/screenshot-ip-reputation.png" alt="IP Reputation" width="800"/>
+
 *View IP reputation scores from multiple threat intelligence sources*
 
 ### URL Analysis
-![URL Reputation](screenshots/screenshot-url-reputation.png)
+<img src="screenshots/screenshot-url-reputation.png" alt="URL Reputation" width="800"/>
+
 *Analyze URLs with urlscan.io sandbox results and VirusTotal scanning*
 
 ### Certificate Analysis
-![Certificate Analysis](screenshots/screenshot-certificate-analysis.png)
+<img src="screenshots/screenshot-certificate-analysis.png" alt="Certificate Analysis" width="800"/>
+
 *Inspect TLS certificates and check Certificate Transparency logs*
 
 ### Installer
-![Installer](screenshots/screenshot-installer.png)
+<img src="screenshots/screenshot-installer.png" alt="Installer" width="800"/>
+
 *Easy installation with version checking and upgrade detection*
 
 ## 🚀 Quick Start
