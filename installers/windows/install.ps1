@@ -133,20 +133,23 @@ if (Test-Path $scanDetectorSource) {
         $sourceSdVersion = Extract-Version -FilePath $scanDetectorSource
         
         if ($installedSdVersion -and $sourceSdVersion) {
+            $versionHandled = $false
             try {
                 $installedSdVer = [Version]$installedSdVersion
                 $sourceSdVer = [Version]$sourceSdVersion
                 
                 if ($sourceSdVer -gt $installedSdVer) {
-                    Write-Host "📦 Scan Detector already installed:" -ForegroundColor Cyan
+                    Write-Host "[*] Scan Detector already installed:" -ForegroundColor Cyan
                     Write-Host "   Installed version: $installedSdVersion" -ForegroundColor Yellow
                     Write-Host "   Available version: $sourceSdVersion" -ForegroundColor Green
                     $upgradeSd = Read-Host "Upgrade Scan Detector to version $sourceSdVersion? (y/n)"
                     if ($upgradeSd -eq "y" -or $upgradeSd -eq "Y") {
                         Copy-Item $scanDetectorSource $scanDetectorDest -Force
                         Write-Host "[+] Upgraded scan_detector.lua to version $sourceSdVersion" -ForegroundColor Green
+                        $versionHandled = $true
                     } else {
                         Write-Host "Skipping Scan Detector upgrade." -ForegroundColor Yellow
+                        $versionHandled = $true
                     }
                 } elseif ($sourceSdVer -eq $installedSdVer) {
                     Write-Host "[+] Scan Detector already installed (version $installedSdVersion)" -ForegroundColor Green
@@ -154,10 +157,21 @@ if (Test-Path $scanDetectorSource) {
                     if ($reinstallSd -eq "y" -or $reinstallSd -eq "Y") {
                         Copy-Item $scanDetectorSource $scanDetectorDest -Force
                         Write-Host "[+] Reinstalled scan_detector.lua" -ForegroundColor Green
+                        $versionHandled = $true
+                    } else {
+                        $versionHandled = $true
                     }
+                } else {
+                    # Installed version is newer, skip
+                    $versionHandled = $true
                 }
             } catch {
                 # Version parsing failed, fall through to timestamp check
+                $versionHandled = $false
+            }
+            
+            # Fallback to timestamp comparison if version comparison didn't result in action
+            if (-not $versionHandled) {
                 $installedSdTime = (Get-Item $scanDetectorDest).LastWriteTime
                 $sourceSdTime = (Get-Item $scanDetectorSource).LastWriteTime
                 if ($sourceSdTime -gt $installedSdTime) {
@@ -166,12 +180,6 @@ if (Test-Path $scanDetectorSource) {
                     if ($upgradeSd -eq "y" -or $upgradeSd -eq "Y") {
                         Copy-Item $scanDetectorSource $scanDetectorDest -Force
                         Write-Host "[+] Upgraded scan_detector.lua" -ForegroundColor Green
-                    }
-                } else {
-                    $installScanDetector = Read-Host "Install Scan Detector plugin? (y/n)"
-                    if ($installScanDetector -eq "y" -or $installScanDetector -eq "Y") {
-                        Copy-Item $scanDetectorSource $scanDetectorDest -Force
-                        Write-Host "[+] Installed scan_detector.lua" -ForegroundColor Green
                     }
                 }
             }
@@ -184,13 +192,13 @@ if (Test-Path $scanDetectorSource) {
                 $upgradeSd = Read-Host "Upgrade Scan Detector? (y/n)"
                 if ($upgradeSd -eq "y" -or $upgradeSd -eq "Y") {
                     Copy-Item $scanDetectorSource $scanDetectorDest -Force
-                    Write-Host "✓ Upgraded scan_detector.lua" -ForegroundColor Green
+                    Write-Host "[+] Upgraded scan_detector.lua" -ForegroundColor Green
                 }
             } else {
                 $installScanDetector = Read-Host "Install Scan Detector plugin? (y/n)"
                 if ($installScanDetector -eq "y" -or $installScanDetector -eq "Y") {
                     Copy-Item $scanDetectorSource $scanDetectorDest -Force
-                    Write-Host "✓ Installed scan_detector.lua" -ForegroundColor Green
+                    Write-Host "[+] Installed scan_detector.lua" -ForegroundColor Green
                 }
             }
         }
