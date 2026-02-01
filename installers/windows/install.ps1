@@ -343,7 +343,7 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "1. Restart Wireshark to load the plugin"
-Write-Host "2. Right-click on a packet field → ASK → [Feature]"
+Write-Host '2. Right-click on a packet field -> ASK -> [Feature]'
 Write-Host ""
 Write-Host "For more information, see:"
 Write-Host "- README.md in this directory"
