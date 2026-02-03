@@ -1,25 +1,54 @@
 #!/bin/bash
 
 # ASK (Analyst's Shark Knife) Installation Script for macOS
-# Version: 0.2.1
+# Version: 0.2.4
 
 set -e
 
 echo "=========================================="
 echo "ASK (Analyst's Shark Knife) Installer"
-echo "Version 0.2.1 - macOS"
+echo "Version 0.2.4 - macOS"
 echo "=========================================="
 echo ""
 
-# Check if Wireshark is installed
-if ! command -v wireshark &> /dev/null; then
-    echo "⚠️  Wireshark is not found in PATH."
+# Check if Wireshark is installed (PATH or standard app locations)
+find_wireshark_bin() {
+    local candidates=(
+        "$(command -v wireshark 2>/dev/null)"
+        "/Applications/Wireshark.app/Contents/MacOS/Wireshark"
+        "/Applications/Wireshark.app/Contents/MacOS/Wireshark-qt"
+        "/usr/local/bin/wireshark"
+        "/opt/homebrew/bin/wireshark"
+    )
+    for c in "${candidates[@]}"; do
+        if [ -n "$c" ] && [ -x "$c" ]; then
+            echo "$c"
+            return 0
+        fi
+    done
+
+    # Fallback to Spotlight if available
+    if command -v mdfind &> /dev/null; then
+        local app_path
+        app_path=$(mdfind "kMDItemCFBundleIdentifier == 'org.wireshark.Wireshark'" | head -n 1)
+        if [ -n "$app_path" ] && [ -x "$app_path/Contents/MacOS/Wireshark" ]; then
+            echo "$app_path/Contents/MacOS/Wireshark"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+WIRESHARK_BIN="$(find_wireshark_bin || true)"
+if [ -z "$WIRESHARK_BIN" ]; then
+    echo "⚠️  Wireshark is not found in PATH or standard app locations."
     echo "   Please install Wireshark from https://www.wireshark.org/"
     exit 1
 fi
+echo "✓ Found Wireshark binary: $WIRESHARK_BIN"
 
 # Get Wireshark version
-WIRESHARK_VERSION=$(wireshark -v 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+' | head -n 1)
+WIRESHARK_VERSION=$("$WIRESHARK_BIN" -v 2>&1 | head -n 1 | grep -oE '[0-9]+\.[0-9]+' | head -n 1)
 echo "✓ Found Wireshark version: $WIRESHARK_VERSION"
 
 # Check version (requires 4.2+)
@@ -251,52 +280,180 @@ else
     echo "⚠️  scan_detector.lua not found in Scan_Detector directory"
 fi
 
-# Check for optional tools
+# Comprehensive dependency check
 echo ""
-echo "Checking optional tools..."
+echo "=========================================="
+echo "Dependency Check - External Tools"
+echo "=========================================="
+echo ""
+echo "Checking for external tools required by ASK features..."
+echo ""
 
-# Check OpenSSL
-if command -v openssl &> /dev/null; then
-    echo "✓ openssl found"
-else
-    echo "⚠️  openssl not found (required for Certificate Validity Check)"
-    echo "   Install with: brew install openssl"
-fi
+# Function to get tool purpose (Bash 3.2 compatible - no associative arrays)
+get_tool_purpose() {
+    case "$1" in
+        openssl) echo "Certificate Validity Check" ;;
+        nmap) echo "Network Scanning (SYN Scan, Service Scan, Vulners Scan)" ;;
+        ping) echo "Ping feature" ;;
+        traceroute) echo "Traceroute feature" ;;
+        dig) echo "DNS Analytics (preferred)" ;;
+        nslookup) echo "DNS Analytics (fallback)" ;;
+        curl) echo "API requests (all threat intelligence APIs)" ;;
+        *) echo "Unknown tool" ;;
+    esac
+}
 
-# Check dig
-if command -v dig &> /dev/null; then
-    echo "✓ dig found"
-else
-    echo "⚠️  dig not found (required for DNS Analytics)"
-    echo "   Install with: brew install bind"
-fi
+# Define list of dependencies (Bash 3.2 compatible)
+DEPENDENCIES="openssl nmap ping traceroute dig nslookup curl"
 
-# Check traceroute
-if command -v traceroute &> /dev/null; then
-    echo "✓ traceroute found"
-else
-    echo "⚠️  traceroute not found (required for Traceroute feature)"
-    echo "   Install with: brew install traceroute"
-fi
+# Track missing dependencies
+MISSING_DEPS=()
+AVAILABLE_DEPS=()
 
-# Check nmap
-if command -v nmap &> /dev/null; then
-    echo "✓ nmap found"
-else
-    echo "⚠️  nmap not found (required for Network Scanning)"
-    echo "   Install with: brew install nmap"
-fi
+# Check each dependency
+for tool in $DEPENDENCIES; do
+    if command -v "$tool" &> /dev/null; then
+        echo "[+] $tool - Found"
+        echo "    Purpose: $(get_tool_purpose "$tool")"
+        AVAILABLE_DEPS+=("$tool")
+    else
+        echo "[!] $tool - NOT FOUND"
+        echo "    Purpose: $(get_tool_purpose "$tool")"
+        MISSING_DEPS+=("$tool")
+    fi
+done
 
-# Check curl
-if command -v curl &> /dev/null; then
-    echo "✓ curl found"
+# Show installation instructions for missing dependencies
+if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
+    echo ""
+    echo "=========================================="
+    echo "Installation Instructions for Missing Tools"
+    echo "=========================================="
+    echo ""
+    
+    for tool in "${MISSING_DEPS[@]}"; do
+        case "$tool" in
+            openssl)
+                echo "[!] OpenSSL - Required for Certificate Validity Check"
+                echo "    Install: brew install openssl"
+                echo "    Download: https://formulae.brew.sh/formula/openssl"
+                echo "    Note: macOS includes OpenSSL but it may be outdated"
+                ;;
+            nmap)
+                echo "[!] Nmap - Required for Network Scanning features"
+                echo "    Install: brew install nmap"
+                echo "    Download: https://formulae.brew.sh/formula/nmap"
+                echo "    Website: https://nmap.org/"
+                echo "    Note: Some scans require administrator privileges"
+                ;;
+            ping)
+                echo "[!] Ping - Required for Ping feature"
+                echo "    Status: Usually pre-installed on macOS"
+                echo "    If missing, ping is part of macOS system tools"
+                ;;
+            traceroute)
+                echo "[!] Traceroute - Required for Traceroute feature"
+                echo "    Install: brew install traceroute"
+                echo "    Download: https://formulae.brew.sh/formula/traceroute"
+                echo "    Alternative: sudo port install traceroute (MacPorts)"
+                ;;
+            dig)
+                echo "[!] Dig - Required for DNS Analytics (preferred tool)"
+                echo "    Install: brew install bind"
+                echo "    Download: https://formulae.brew.sh/formula/bind"
+                echo "    Note: Includes dig, nslookup, and other DNS tools"
+                ;;
+            nslookup)
+                echo "[!] Nslookup - Required for DNS Analytics (fallback)"
+                echo "    Install: brew install bind"
+                echo "    Download: https://formulae.brew.sh/formula/bind"
+                echo "    Note: Usually included with bind package"
+                ;;
+            curl)
+                echo "[!] Curl - Required for all API requests"
+                echo "    Install: brew install curl"
+                echo "    Download: https://formulae.brew.sh/formula/curl"
+                echo "    Website: https://curl.se/"
+                echo "    Note: macOS includes curl but Homebrew version is recommended"
+                ;;
+        esac
+        echo ""
+    done
+    
+    echo "After installing missing tools, restart Wireshark for changes to take effect."
+    echo ""
+    
+    # Show feature availability summary
+    echo "=========================================="
+    echo "Feature Availability Summary"
+    echo "=========================================="
+    echo ""
+    echo "Based on installed tools, the following features are available:"
+    echo ""
+    
+    if [[ " ${AVAILABLE_DEPS[@]} " =~ " curl " ]]; then
+        echo "[+] API-based Features: Available"
+        echo "    - IP Reputation (AbuseIPDB, VirusTotal)"
+        echo "    - IP Intelligence (Shodan, IPinfo, GreyNoise)"
+        echo "    - Threat Intelligence (AlienVault OTX, Abuse.ch)"
+        echo "    - URL Analysis (urlscan.io, VirusTotal)"
+        echo "    - Certificate Transparency (crt.sh)"
+    else
+        echo "[!] API-based Features: UNAVAILABLE (curl required)"
+    fi
+    
+    if [[ " ${AVAILABLE_DEPS[@]} " =~ " openssl " ]]; then
+        echo "[+] Certificate Validity Check: Available"
+    else
+        echo "[!] Certificate Validity Check: UNAVAILABLE (openssl required)"
+    fi
+    
+    if [[ " ${AVAILABLE_DEPS[@]} " =~ " dig " ]] || [[ " ${AVAILABLE_DEPS[@]} " =~ " nslookup " ]]; then
+        echo "[+] DNS Analytics: Available"
+    else
+        echo "[!] DNS Analytics: UNAVAILABLE (dig or nslookup required)"
+    fi
+    
+    if [[ " ${AVAILABLE_DEPS[@]} " =~ " ping " ]]; then
+        echo "[+] Ping: Available"
+    else
+        echo "[!] Ping: UNAVAILABLE (ping required)"
+    fi
+    
+    if [[ " ${AVAILABLE_DEPS[@]} " =~ " traceroute " ]]; then
+        echo "[+] Traceroute: Available"
+    else
+        echo "[!] Traceroute: UNAVAILABLE (traceroute required)"
+    fi
+    
+    if [[ " ${AVAILABLE_DEPS[@]} " =~ " nmap " ]]; then
+        echo "[+] Network Scanning (Nmap): Available"
+        echo "    - SYN Scan"
+        echo "    - Service Scan"
+        echo "    - Vulners Vulnerability Scan"
+    else
+        echo "[!] Network Scanning (Nmap): UNAVAILABLE (nmap required)"
+    fi
+    
+    echo ""
 else
-    echo "⚠️  curl not found (required for API requests)"
-    echo "   Install with: brew install curl"
+    echo ""
+    echo "[+] All external tools are available!"
+    echo ""
+    echo "All ASK features are fully functional:"
+    echo "  - API-based threat intelligence lookups"
+    echo "  - Certificate Validity Check"
+    echo "  - DNS Analytics"
+    echo "  - Network diagnostics (Ping, Traceroute)"
+    echo "  - Network scanning (Nmap)"
+    echo ""
 fi
 
 # Offer to install JSON library (check for curl/wget first)
 echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "📚 JSON Library Installation (Recommended)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 HAS_DOWNLOAD_TOOL=false
 if command -v curl &> /dev/null; then
     HAS_DOWNLOAD_TOOL=true
@@ -307,7 +464,12 @@ elif command -v wget &> /dev/null; then
 fi
 
 if [ "$HAS_DOWNLOAD_TOOL" = true ]; then
-    read -p "Install JSON library for better performance? (y/n) " -n 1 -r
+    echo "The JSON library significantly improves parsing performance for:"
+    echo "  • urlscan.io search results"
+    echo "  • Complex JSON responses from all APIs"
+    echo "  • Nested arrays and objects"
+    echo ""
+    read -p "Install JSON library? (y/n) " -n 1 -r
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         JSON_URL="https://raw.githubusercontent.com/rxi/json.lua/master/json.lua"

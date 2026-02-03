@@ -1,9 +1,9 @@
 # ASK (Analyst's Shark Knife) Installation Script for Windows
-# Version: 0.2.1
+# Version: 0.2.4
 
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "ASK (Analyst's Shark Knife) Installer" -ForegroundColor Cyan
-Write-Host "Version 0.2.1 - Windows" -ForegroundColor Cyan
+Write-Host "Version 0.2.4 - Windows" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -279,52 +279,166 @@ if (Test-Path $scanDetectorSource) {
     Write-Host "[!] scan_detector.lua not found in Scan_Detector directory" -ForegroundColor Yellow
 }
 
-# Check for optional tools
+# Comprehensive dependency check
 Write-Host ""
-Write-Host "Checking optional tools..." -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host "Dependency Check - External Tools" -ForegroundColor Cyan
+Write-Host "==========================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Checking for external tools required by ASK features..." -ForegroundColor Cyan
+Write-Host ""
 
-# Check OpenSSL
-$openssl = Get-Command openssl -ErrorAction SilentlyContinue
-if ($openssl) {
-    Write-Host "[+] openssl found" -ForegroundColor Green
-} else {
-    Write-Host "[!] openssl not found (required for Certificate Validity Check)" -ForegroundColor Yellow
-    Write-Host "   Install options:" -ForegroundColor Yellow
-    Write-Host "   - Git for Windows (includes OpenSSL)" -ForegroundColor Yellow
-    Write-Host "   - Standalone: https://slproweb.com/products/Win32OpenSSL.html" -ForegroundColor Yellow
-    Write-Host "   - Chocolatey: choco install openssl" -ForegroundColor Yellow
+# Define dependencies with their purposes
+$dependencies = @{
+    "openssl" = "Certificate Validity Check"
+    "nmap" = "Network Scanning (SYN Scan, Service Scan, Vulners Scan)"
+    "ping" = "Ping feature"
+    "tracert" = "Traceroute feature"
+    "dig" = "DNS Analytics (preferred)"
+    "nslookup" = "DNS Analytics (fallback - usually pre-installed)"
+    "curl" = "API requests (all threat intelligence APIs)"
 }
 
-# Check dig
-$dig = Get-Command dig -ErrorAction SilentlyContinue
-if ($dig) {
-    Write-Host "[+] dig found" -ForegroundColor Green
-} else {
-    Write-Host "[!] dig not found (required for DNS Analytics)" -ForegroundColor Yellow
-    Write-Host "   Install options:" -ForegroundColor Yellow
-    Write-Host "   - BIND Tools: https://www.isc.org/download/" -ForegroundColor Yellow
-    Write-Host "   - WSL (Windows Subsystem for Linux)" -ForegroundColor Yellow
-    Write-Host "   - Chocolatey: choco install bind-toolsonly" -ForegroundColor Yellow
+# Track missing and available dependencies
+$missingDeps = @()
+$availableDeps = @()
+
+# Check each dependency
+foreach ($tool in $dependencies.Keys) {
+    $cmd = Get-Command $tool -ErrorAction SilentlyContinue
+    if ($cmd) {
+        Write-Host "[+] $tool - Found" -ForegroundColor Green
+        Write-Host "    Purpose: $($dependencies[$tool])" -ForegroundColor Gray
+        $availableDeps += $tool
+    } else {
+        Write-Host "[!] $tool - NOT FOUND" -ForegroundColor Yellow
+        Write-Host "    Purpose: $($dependencies[$tool])" -ForegroundColor Gray
+        $missingDeps += $tool
+    }
 }
 
-# Check nmap
-$nmap = Get-Command nmap -ErrorAction SilentlyContinue
-if ($nmap) {
-    Write-Host "[+] nmap found" -ForegroundColor Green
+# Show installation instructions for missing dependencies
+if ($missingDeps.Count -gt 0) {
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "Installation Instructions for Missing Tools" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host ""
+    
+    foreach ($tool in $missingDeps) {
+        switch ($tool) {
+            "openssl" {
+                Write-Host "[!] OpenSSL - Required for Certificate Validity Check" -ForegroundColor Yellow
+                Write-Host "    Download: https://slproweb.com/products/Win32OpenSSL.html" -ForegroundColor Cyan
+                Write-Host "    Chocolatey: choco install openssl" -ForegroundColor Cyan
+                Write-Host "    Git for Windows: Includes OpenSSL (https://git-scm.com/download/win)" -ForegroundColor Cyan
+                Write-Host "    Note: Add OpenSSL to your system PATH after installation" -ForegroundColor Gray
+            }
+            "nmap" {
+                Write-Host "[!] Nmap - Required for Network Scanning features" -ForegroundColor Yellow
+                Write-Host "    Download: https://nmap.org/download.html" -ForegroundColor Cyan
+                Write-Host "    Chocolatey: choco install nmap" -ForegroundColor Cyan
+                Write-Host "    Note: Some scans require administrator privileges" -ForegroundColor Gray
+            }
+            "ping" {
+                Write-Host "[!] Ping - Required for Ping feature" -ForegroundColor Yellow
+                Write-Host "    Status: Usually pre-installed on Windows" -ForegroundColor Gray
+                Write-Host "    If missing, ping is part of Windows system tools" -ForegroundColor Gray
+            }
+            "tracert" {
+                Write-Host "[!] Tracert - Required for Traceroute feature" -ForegroundColor Yellow
+                Write-Host "    Status: Usually pre-installed on Windows" -ForegroundColor Gray
+                Write-Host "    If missing, tracert is part of Windows system tools" -ForegroundColor Gray
+            }
+            "dig" {
+                Write-Host "[!] Dig - Required for DNS Analytics (preferred tool)" -ForegroundColor Yellow
+                Write-Host "    Download: https://www.isc.org/download/" -ForegroundColor Cyan
+                Write-Host "    Chocolatey: choco install bind-toolsonly" -ForegroundColor Cyan
+                Write-Host "    WSL: Use Windows Subsystem for Linux (includes dig)" -ForegroundColor Cyan
+                Write-Host "    Note: nslookup (fallback) is usually pre-installed on Windows" -ForegroundColor Gray
+            }
+            "nslookup" {
+                Write-Host "[!] Nslookup - Required for DNS Analytics (fallback)" -ForegroundColor Yellow
+                Write-Host "    Status: Usually pre-installed on Windows" -ForegroundColor Gray
+                Write-Host "    If missing, install BIND tools or use WSL" -ForegroundColor Gray
+            }
+            "curl" {
+                Write-Host "[!] Curl - Required for all API requests" -ForegroundColor Yellow
+                Write-Host "    Status: Usually pre-installed on Windows 10+" -ForegroundColor Gray
+                Write-Host "    Download: https://curl.se/windows/" -ForegroundColor Cyan
+                Write-Host "    Chocolatey: choco install curl" -ForegroundColor Cyan
+            }
+        }
+        Write-Host ""
+    }
+    
+    Write-Host "After installing missing tools, restart Wireshark for changes to take effect." -ForegroundColor Yellow
+    Write-Host ""
+    
+    # Show feature availability summary
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host "Feature Availability Summary" -ForegroundColor Cyan
+    Write-Host "==========================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Based on installed tools, the following features are available:" -ForegroundColor Cyan
+    Write-Host ""
+    
+    if ($availableDeps -contains "curl") {
+        Write-Host "[+] API-based Features: Available" -ForegroundColor Green
+        Write-Host "    - IP Reputation (AbuseIPDB, VirusTotal)" -ForegroundColor Gray
+        Write-Host "    - IP Intelligence (Shodan, IPinfo, GreyNoise)" -ForegroundColor Gray
+        Write-Host "    - Threat Intelligence (AlienVault OTX, Abuse.ch)" -ForegroundColor Gray
+        Write-Host "    - URL Analysis (urlscan.io, VirusTotal)" -ForegroundColor Gray
+        Write-Host "    - Certificate Transparency (crt.sh)" -ForegroundColor Gray
+    } else {
+        Write-Host "[!] API-based Features: UNAVAILABLE (curl required)" -ForegroundColor Yellow
+    }
+    
+    if ($availableDeps -contains "openssl") {
+        Write-Host "[+] Certificate Validity Check: Available" -ForegroundColor Green
+    } else {
+        Write-Host "[!] Certificate Validity Check: UNAVAILABLE (openssl required)" -ForegroundColor Yellow
+    }
+    
+    if ($availableDeps -contains "dig" -or $availableDeps -contains "nslookup") {
+        Write-Host "[+] DNS Analytics: Available" -ForegroundColor Green
+    } else {
+        Write-Host "[!] DNS Analytics: UNAVAILABLE (dig or nslookup required)" -ForegroundColor Yellow
+    }
+    
+    if ($availableDeps -contains "ping") {
+        Write-Host "[+] Ping: Available" -ForegroundColor Green
+    } else {
+        Write-Host "[!] Ping: UNAVAILABLE (ping required)" -ForegroundColor Yellow
+    }
+    
+    if ($availableDeps -contains "tracert") {
+        Write-Host "[+] Traceroute: Available" -ForegroundColor Green
+    } else {
+        Write-Host "[!] Traceroute: UNAVAILABLE (tracert required)" -ForegroundColor Yellow
+    }
+    
+    if ($availableDeps -contains "nmap") {
+        Write-Host "[+] Network Scanning (Nmap): Available" -ForegroundColor Green
+        Write-Host "    - SYN Scan" -ForegroundColor Gray
+        Write-Host "    - Service Scan" -ForegroundColor Gray
+        Write-Host "    - Vulners Vulnerability Scan" -ForegroundColor Gray
+    } else {
+        Write-Host "[!] Network Scanning (Nmap): UNAVAILABLE (nmap required)" -ForegroundColor Yellow
+    }
+    
+    Write-Host ""
 } else {
-    Write-Host "[!] nmap not found (required for Network Scanning)" -ForegroundColor Yellow
-    Write-Host "   Install options:" -ForegroundColor Yellow
-    Write-Host "   - Official: https://nmap.org/download.html" -ForegroundColor Yellow
-    Write-Host "   - Chocolatey: choco install nmap" -ForegroundColor Yellow
-}
-
-# Check curl
-$curl = Get-Command curl -ErrorAction SilentlyContinue
-if ($curl) {
-    Write-Host "[+] curl found" -ForegroundColor Green
-} else {
-    Write-Host "[!] curl not found (required for API requests)" -ForegroundColor Yellow
-    Write-Host "   Usually pre-installed on Windows 10+" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "[+] All external tools are available!" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "All ASK features are fully functional:" -ForegroundColor Green
+    Write-Host "  - API-based threat intelligence lookups" -ForegroundColor Gray
+    Write-Host "  - Certificate Validity Check" -ForegroundColor Gray
+    Write-Host "  - DNS Analytics" -ForegroundColor Gray
+    Write-Host "  - Network diagnostics (Ping, Traceroute)" -ForegroundColor Gray
+    Write-Host "  - Network scanning (Nmap)" -ForegroundColor Gray
+    Write-Host ""
 }
 
 # Offer to install JSON library (check for curl/Invoke-WebRequest first)

@@ -2,7 +2,7 @@
 
 # ASK (Analyst's Shark Knife)
 
-[![Version](https://img.shields.io/badge/version-0.2.1-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.5-blue.svg)](CHANGELOG.md)
 [![Status](https://img.shields.io/badge/status-initial%20public%20release-green.svg)](CHANGELOG.md)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
 [![Wireshark](https://img.shields.io/badge/Wireshark-4.2%2B-1679A7.svg)](https://www.wireshark.org/)
@@ -13,9 +13,9 @@
 
 A comprehensive Wireshark Lua plugin suite for security analytics and IOC (Indicators of Compromise) research. Provides real-time threat intelligence lookups directly from Wireshark's packet context menu.
 
-> **✨ Version 0.2.1**: Enhanced installer with version checking and upgrade detection. Includes Scan Detector integration and improved JSON library installation.
+> **✨ Version 0.2.5**: Certificate checking now uses SSLLabs API for comprehensive SSL/TLS security analysis! Get security grades (A+ to F), vulnerability detection (Heartbleed, POODLE, etc.), protocol support, and detailed certificate information. No OpenSSL dependency required.
 
-> **⚠️ Important**: Some features require external tools (nmap, dig, openssl, traceroute) and API keys. Please review the [Feature Matrix](#-feature-matrix) and check your platform's [installer documentation](installers/) before installation to ensure all dependencies are available.
+> **⚠️ Important**: Some features require external tools (nmap, dig, traceroute) and API keys. Please review the [Feature Matrix](#-feature-matrix) and check your platform's [installer documentation](installers/) before installation to ensure all dependencies are available.
 
 ## ✨ Features
 
@@ -26,9 +26,9 @@ A comprehensive Wireshark Lua plugin suite for security analytics and IOC (Indic
 - 🔗 **URL Reputation** - urlscan.io sandbox analysis, VirusTotal scanning, AlienVault OTX threat intelligence, and URLhaus malware detection
 - 🌐 **Domain Reputation** - VirusTotal and AlienVault OTX domain analysis
 - 🔐 **TLS Certificate Analysis** - Direct certificate inspection and Certificate Transparency logs
-- 🔒 **Certificate Validity Check** - Fast OpenSSL-based certificate validation
+- 🔒 **SSL/TLS Security Analysis** - SSLLabs API integration (no API key required) 
 - 📧 **Email Analysis** - SMTP/IMF email address analysis
-- 📊 **DNS Analytics** - Comprehensive DNS lookups (PTR, A, AAAA, MX, TXT, NS, SOA, CNAME)
+- 📊 **DNS Analytics** - Cloudflare DNS over HTTPS (DoH) integration with dig/nslookup fallback for comprehensive DNS lookups (PTR, A, AAAA, MX, TXT, NS, SOA, CNAME)
 - 🌐 **Network Diagnostics** - Ping and Traceroute tools
 - 🔍 **Network Scanning** - Nmap integration (SYN scan, service scan, Vulners vulnerability scan)
 - 🛡️ **Scan Detector** - Optional post-dissector plugin for real-time network scan detection (SYN, ACK, FIN, XMAS, NULL, UDP, ARP scans)
@@ -51,27 +51,22 @@ Right-click on packet field → ASK → [Feature]
 
 ### Context Menu
 ![ASK Context Menu](screenshots/screenshot-menu.png)
-
 *Right-click on any packet field to access ASK features*
 
 ### IP Reputation Lookup
 ![IP Reputation](screenshots/screenshot-ip-reputation.png)
-
 *View IP reputation scores from multiple threat intelligence sources*
 
 ### URL Analysis
 ![URL Reputation](screenshots/screenshot-url-reputation.png)
-
 *Analyze URLs with urlscan.io sandbox results and VirusTotal scanning*
 
 ### Certificate Analysis
 ![Certificate Analysis](screenshots/screenshot-certificate-analysis.png)
-
 *Inspect TLS certificates and check Certificate Transparency logs*
 
 ### Installer
 ![Installer](screenshots/screenshot-installer.png)
-
 *Easy installation with version checking and upgrade detection*
 
 ## 🚀 Quick Start
@@ -144,8 +139,8 @@ The installer will:
 | **IOC Intelligence (ThreatFox)** | ❌ | ✅ | ❌ | Fair use (free tier) |
 | **Domain Reputation (VirusTotal)** | ❌ | ✅ | ❌ | 4/min, 500/day |
 | **Domain Intelligence (AlienVault OTX)** | ❌ | ✅ | ❌ | Unlimited (free tier) |
-| **Certificate Validity Check** | ❌ | ❌ | ✅ openssl | N/A |
-| **DNS Analytics** | ❌ | ❌ | ✅ dig | N/A |
+| **SSL/TLS Security Analysis** | ⚠️ Limited | ❌ | ✅ curl (SSLLabs API) | N/A |
+| **DNS Analytics** | ⚠️ Limited | ❌ | ✅ curl (Cloudflare DoH) OR dig/nslookup | N/A |
 | **Ping** | ❌ | ❌ | ✅ ping | N/A |
 | **Traceroute** | ❌ | ❌ | ✅ traceroute | N/A |
 | **Nmap Scans (SYN, Service, Vulners)** | ❌ | ❌ | ✅ nmap | N/A |
@@ -153,8 +148,13 @@ The installer will:
 
 ### Legend
 - ✅ **Works** - Feature is fully functional
-- ⚠️ **Limited** - Feature works but with reduced functionality
+- ⚠️ **Limited** - Feature works but requires an external tool (curl for API-based methods, or fallback tools like dig)
 - ❌ **Not Available** - Feature requires the listed requirement
+
+### Notes on Tool Requirements
+- **SSL/TLS Security Analysis**: Primary method uses SSLLabs API via curl (no API key required). Falls back to OpenSSL if API unavailable.
+- **DNS Analytics**: Primary method uses Cloudflare DNS over HTTPS (DoH) via curl (no API key required). Falls back to dig/nslookup if DoH unavailable.
+- **curl**: Usually pre-installed on macOS/Linux. Windows 10+ includes curl. Required for most API-based features.
 
 ## 🔑 API Key Registration & Free Tiers
 
@@ -208,24 +208,54 @@ The installer will:
   - Maliciousness scores
   - Resource analysis (domains, IPs, URLs contacted)
 
+### ssl-checker.io (SSL/TLS Security Analysis - No Registration Required)
+- **Registration:** Not required - free service
+- **API Key:** Not required
+- **Endpoint:** https://ssl-checker.io/api/v1/check/{domain}
+- **What you get:**
+  - Certificate validity dates (notBefore, notAfter)
+  - Issuer and subject information
+  - Serial number and signature algorithm
+  - Subject Alternative Names (SANs)
+  - SHA1 fingerprint
+  - HSTS status
+  - Days until expiry
+- **Note:** This is the primary method for certificate checking. Falls back to OpenSSL if unavailable.
+
+### Cloudflare DNS over HTTPS (DNS Analytics - No Registration Required)
+- **Registration:** Not required - free service
+- **API Key:** Not required
+- **Endpoint:** https://cloudflare-dns.com/dns-query
+- **What you get:**
+  - All DNS record types (A, AAAA, MX, NS, TXT, SOA, CNAME, PTR)
+  - Reverse DNS lookups (PTR records)
+  - Forward DNS lookups
+  - Cross-platform support (no local DNS tools needed)
+- **Note:** This is the primary method for DNS Analytics. Falls back to dig/nslookup if unavailable.
+
 ## 🛠️ External Tools
 
 ### Required Tools (for specific features)
 
-| Tool | Feature(s) | Installation |
-|------|-----------|--------------|
-| **openssl** | Certificate Validity Check | macOS: `brew install openssl`<br>Linux: `apt-get install openssl`<br>Windows: [Download](https://slproweb.com/products/Win32OpenSSL.html) |
-| **dig** | DNS Analytics | macOS: `brew install bind`<br>Linux: `apt-get install dnsutils`<br>Windows: Install BIND tools or use WSL |
-| **ping** | Ping Host | Usually pre-installed |
-| **traceroute** | Traceroute to Host | macOS: `brew install traceroute`<br>Linux: `apt-get install traceroute`<br>Windows: Pre-installed (tracert) |
-| **nmap** | Network Scanning | macOS: `brew install nmap`<br>Linux: `apt-get install nmap`<br>Windows: [Download](https://nmap.org/download.html) |
+| Tool | Feature(s) | Installation | Notes |
+|------|-----------|--------------|-------|
+| **curl** | SSL/TLS Security Analysis (SSLLabs API), DNS Analytics (Cloudflare DoH) | Usually pre-installed | Primary method for certificate checks and DNS lookups via APIs |
+| **openssl** | SSL/TLS Security Analysis (fallback) | macOS: `brew install openssl`<br>Linux: `apt-get install openssl`<br>Windows: [Download](https://slproweb.com/products/Win32OpenSSL.html) | Fallback if SSLLabs API unavailable |
+| **dig** or **nslookup** | DNS Analytics (fallback) | macOS: `brew install bind`<br>Linux: `apt-get install dnsutils`<br>Windows: nslookup pre-installed | Fallback if Cloudflare DoH unavailable |
+| **ping** | Ping Host | Usually pre-installed | Network diagnostics |
+| **traceroute** | Traceroute to Host | macOS: `brew install traceroute`<br>Linux: `apt-get install traceroute`<br>Windows: Pre-installed (tracert) | Network diagnostics |
+| **nmap** | Network Scanning | macOS: `brew install nmap`<br>Linux: `apt-get install nmap`<br>Windows: [Download](https://nmap.org/download.html) | Network scanning (SYN, Service, Vulners scans) |
 
 ## 📋 Requirements
 
 ### Core Requirements
 - **Wireshark 4.2+** (for `register_packet_menu` support)
-- **curl** (for HTTP requests to APIs)
+- **curl** (for HTTP requests to APIs and Cloudflare DoH/SSLLabs API)
 - **Lua JSON library** (recommended) - See [INSTALL_JSON_LIBRARY.md](INSTALL_JSON_LIBRARY.md)
+
+### Feature-Specific Requirements
+- **SSL/TLS Security Analysis**: Uses SSLLabs API (no API key required) via curl. Falls back to OpenSSL if API unavailable.
+- **DNS Analytics**: Uses Cloudflare DNS over HTTPS (DoH) via curl (no API key required). Falls back to dig/nslookup if DoH unavailable.
 
 ### Optional Requirements
 - API keys for enhanced features (see [Feature Matrix](#-feature-matrix))
@@ -272,4 +302,6 @@ For issues, questions, or contributions, please use the GitHub Issues page.
 - Wireshark team for the excellent packet analysis platform
 - All API providers (AbuseIPDB, VirusTotal, Shodan, IPinfo, urlscan.io, AlienVault OTX, Abuse.ch) for their free tiers
 - RDAP.org for providing free RDAP lookup services
+- **ssl-checker.io** for free SSL certificate checking API (no registration required)
+- **Cloudflare** for free DNS over HTTPS (DoH) service (no registration required)
 - **rxi/json.lua** - Lightweight pure-Lua JSON library used for enhanced JSON parsing (MIT License) - https://github.com/rxi/json.lua

@@ -6,13 +6,13 @@
     - DNS Registration Info (RDAP)
     - ARIN IP Registration Data (RDAP) - IPv4 & IPv6
     - IP Reputation (AbuseIPDB, VirusTotal)
-    - URL Categorization & Reputation (urlscan.io, VirusTotal)
-    - Domain Reputation (VirusTotal)
-    - IP Intelligence (Shodan, IPinfo, GreyNoise)
+    - URL Categorization & Reputation (urlscan.io, VirusTotal, AlienVault OTX, URLhaus)
+    - Domain Reputation (VirusTotal, AlienVault OTX)
+    - IP Intelligence (Shodan, IPinfo, GreyNoise, AlienVault OTX, ThreatFox)
     - TLS/SSL Certificate Analysis (Direct certificate inspection + Certificate Transparency)
     - Email Analysis (SMTP/IMF)
     
-    Version: 0.2.1
+    Version: 0.2.5
     Author: Walter Hofstetter
     License: GPL-2.0
 --]]
@@ -21,10 +21,12 @@
 -- Register plugin info with Wireshark
 -------------------------------------------------
 
+local ASK_BUILD = "2026-02-03 ssllabs-integration"
+
 set_plugin_info({
-    version = "0.2.1",
+    version = "0.2.5",
     author = "Walter Hofstetter",
-    description = "Analyst's Shark Knife (ASK) - Comprehensive suite for security analytics and IOC research. Provides DNS registration info (RDAP), IP reputation (AbuseIPDB, VirusTotal), URL categorization (urlscan.io, VirusTotal), IP intelligence (Shodan, IPinfo, GreyNoise), TLS certificate analysis, certificate transparency analysis, DNS analytics, and email analysis.",
+    description = "Analyst's Shark Knife (ASK) - Comprehensive suite for security analytics and IOC research. Provides DNS registration info (RDAP), IP reputation (AbuseIPDB, VirusTotal), URL categorization (urlscan.io, VirusTotal, AlienVault OTX, URLhaus), IP intelligence (Shodan, IPinfo, GreyNoise, AlienVault OTX, ThreatFox), TLS certificate analysis, certificate transparency analysis, DNS analytics, and email analysis.",
     repository = "https://github.com/netwho/ask"
 })
 
@@ -196,6 +198,26 @@ local CONFIG = {
     GREYNOISE_ENABLED = true,
     GREYNOISE_API_URL = "https://api.greynoise.io/v3/community",
     
+    -- AlienVault OTX API Configuration
+    -- Free tier: Unlimited requests (community-driven threat intelligence)
+    -- Registration: https://otx.alienvault.com (free account required)
+    -- Provides IP, domain, URL, and file hash reputation with pulse data
+    -- API key priority: 1. Environment variable, 2. ~/.ask/OTX_API_KEY.txt
+    OTX_API_KEY = get_api_key("OTX", "OTX_API_KEY", ""),
+    OTX_ENABLED = true,
+    OTX_API_URL = "https://otx.alienvault.com/api/v1",
+    
+    -- Abuse.ch API Configuration (URLhaus + ThreatFox)
+    -- Free tier: Fair use policy (free Auth-Key required)
+    -- Registration: https://auth.abuse.ch (free Auth-Key)
+    -- URLhaus: Malware URL detection, payload information, host lookups
+    -- ThreatFox: IOC search (IP, domain, URL, hash), malware family identification
+    -- API key priority: 1. Environment variable, 2. ~/.ask/ABUSECH_API_KEY.txt
+    ABUSECH_API_KEY = get_api_key("ABUSECH", "ABUSECH_API_KEY", ""),
+    ABUSECH_ENABLED = true,
+    URLHAUS_API_URL = "https://urlhaus-api.abuse.ch/v1",
+    THREATFOX_API_URL = "https://threatfox-api.abuse.ch/api/v1",
+    
     -- RDAP Configuration (no API key required)
     RDAP_ENABLED = true,
     RDAP_BOOTSTRAP_URL = "https://rdap.org",
@@ -279,6 +301,152 @@ else
     log_message("curl found at: " .. string.gsub(curl_path, "\n", ""))
 end
 
+-------------------------------------------------
+-- ASK Documents Directory and Logging
+-------------------------------------------------
+
+-- Global variable to store ASK documents directory
+local ASK_DOCS_DIR = nil
+
+-- Initialize ASK directory in Documents folder
+local function init_ask_directory()
+    -- Determine home directory based on platform
+    local home_dir
+    local path_sep
+    
+    if package.config:sub(1,1) == "\\" then
+        -- Windows
+        home_dir = os.getenv("USERPROFILE")
+        path_sep = "\\"
+    else
+        -- Unix-like (macOS, Linux)
+        home_dir = os.getenv("HOME")
+        path_sep = "/"
+    end
+    
+    if not home_dir then
+        log_message("WARNING: Cannot determine home directory - logging disabled")
+        return nil
+    end
+    
+    -- Create ASK directory in Documents folder
+    local docs_dir = home_dir .. path_sep .. "Documents" .. path_sep .. "ASK"
+    
+    -- Try to create directory (will succeed if already exists on most systems)
+    local success = false
+    if package.config:sub(1,1) == "\\" then
+        -- Windows
+        local cmd = 'if not exist "' .. docs_dir .. '" mkdir "' .. docs_dir .. '"'
+        local result = os.execute(cmd)
+        success = (result == 0 or result == true)
+    else
+        -- Unix-like
+        local cmd = 'mkdir -p "' .. docs_dir .. '" 2>/dev/null'
+        local result = os.execute(cmd)
+        success = (result == 0 or result == true)
+    end
+    
+    -- Verify directory exists by trying to write a test file
+    local test_file = docs_dir .. path_sep .. ".ask_test"
+    local f = io.open(test_file, "w")
+    if f then
+        f:close()
+        os.remove(test_file)
+        log_message("ASK directory initialized: " .. docs_dir)
+        return docs_dir
+    else
+        log_message("WARNING: Cannot write to ASK directory - logging disabled")
+        return nil
+    end
+end
+
+-- Get current date string for log filename (YYYY-MM-DD format)
+local function get_date_string()
+    return os.date("%Y-%m-%d")
+end
+
+-- Get current timestamp for log entries
+local function get_timestamp()
+    return os.date("%Y-%m-%d %H:%M:%S")
+end
+
+-- Append content to daily log file
+local function append_to_log(query_type, query_target, result_content)
+    if not ASK_DOCS_DIR then
+        return false, "Logging not initialized"
+    end
+    
+    local path_sep = package.config:sub(1,1) == "\\" and "\\" or "/"
+    local log_filename = "ASK-" .. get_date_string() .. ".log"
+    local log_path = ASK_DOCS_DIR .. path_sep .. log_filename
+    
+    local f = io.open(log_path, "a")
+    if not f then
+        return false, "Cannot open log file: " .. log_path
+    end
+    
+    -- Write log entry
+    f:write(string.rep("=", 80) .. "\n")
+    f:write("Timestamp: " .. get_timestamp() .. "\n")
+    f:write("Query Type: " .. (query_type or "Unknown") .. "\n")
+    f:write("Query Target: " .. (query_target or "Unknown") .. "\n")
+    f:write(string.rep("-", 80) .. "\n")
+    f:write(result_content .. "\n")
+    f:write("\n")
+    f:close()
+    
+    return true, log_path
+end
+
+-- Copy text to clipboard (platform-dependent)
+local function copy_to_clipboard(text)
+    if not text or text == "" then
+        return false, "No text to copy"
+    end
+    
+    local success = false
+    local cmd
+    
+    if package.config:sub(1,1) == "\\" then
+        -- Windows: Use clip command
+        local temp_file = os.tmpname()
+        local f = io.open(temp_file, "w")
+        if f then
+            f:write(text)
+            f:close()
+            cmd = 'type "' .. temp_file .. '" | clip'
+            local result = os.execute(cmd)
+            os.remove(temp_file)
+            success = (result == 0 or result == true)
+        end
+    else
+        -- macOS: Use pbcopy
+        if os.execute("which pbcopy >/dev/null 2>&1") == 0 or os.execute("which pbcopy >/dev/null 2>&1") == true then
+            cmd = 'echo ' .. string.format('%q', text) .. ' | pbcopy'
+            local result = os.execute(cmd)
+            success = (result == 0 or result == true)
+        -- Linux: Try xclip or xsel
+        elseif os.execute("which xclip >/dev/null 2>&1") == 0 or os.execute("which xclip >/dev/null 2>&1") == true then
+            cmd = 'echo ' .. string.format('%q', text) .. ' | xclip -selection clipboard'
+            local result = os.execute(cmd)
+            success = (result == 0 or result == true)
+        elseif os.execute("which xsel >/dev/null 2>&1") == 0 or os.execute("which xsel >/dev/null 2>&1") == true then
+            cmd = 'echo ' .. string.format('%q', text) .. ' | xsel --clipboard'
+            local result = os.execute(cmd)
+            success = (result == 0 or result == true)
+        end
+    end
+    
+    if success then
+        return true, "Copied to clipboard"
+    else
+        return false, "Clipboard command not available"
+    end
+end
+
+-- Initialize ASK directory on load
+ASK_DOCS_DIR = init_ask_directory()
+
 local function show_error_window(title, message)
     local win = TextWindow.new(title or "ASK Error")
     win:set(message)
@@ -287,6 +455,39 @@ end
 local function show_result_window(title, content)
     local win = TextWindow.new(title or "ASK Results")
     win:set(content)
+end
+
+-- Enhanced result window with copy and log buttons
+local function show_result_window_with_buttons(title, content, query_type, query_target)
+    local win = TextWindow.new(title or "ASK Results")
+    
+    -- Set content directly without button text
+    win:set(content)
+    
+    -- Add copy button
+    win:add_button("Copy to Clipboard", function()
+        local success, msg = copy_to_clipboard(content)
+        if success then
+            log_message("Copied to clipboard: " .. title)
+        else
+            log_message("Failed to copy to clipboard: " .. msg)
+            show_error_window("Clipboard Error", "Failed to copy to clipboard:\n" .. msg)
+        end
+    end)
+    
+    -- Add log button
+    win:add_button("Save to Log", function()
+        local success, msg = append_to_log(query_type, query_target, content)
+        if success then
+            log_message("Saved to log: " .. msg)
+            -- Show confirmation
+            local confirm_win = TextWindow.new("Log Saved")
+            confirm_win:set("Result saved to:\n" .. msg .. "\n\nQuery Type: " .. query_type .. "\nQuery Target: " .. query_target)
+        else
+            log_message("Failed to save to log: " .. msg)
+            show_error_window("Log Error", "Failed to save to log:\n" .. msg)
+        end
+    end)
 end
 
 -- Extract field value from packet fields
@@ -583,8 +784,9 @@ local function http_post(url, headers, body)
     return result, nil
 end
 
-local function http_get(url, headers)
+local function http_get(url, headers, opts)
     headers = headers or {}
+    opts = opts or {}
     
     if not url or url == "" then
         return nil, "Invalid URL: empty or nil"
@@ -663,8 +865,17 @@ local function http_get(url, headers)
             return nil, "curl error: " .. string.sub(result, 1, 300)
         end
         
+        -- If caller allows JSON errors, return JSON payload as-is
+        if opts.allow_error_json and string.match(result, "^%s*%{") then
+            return result, nil
+        end
+
         -- Check for HTTP error responses in JSON (4xx, 5xx)
-        if string.find(result, '"status":%s*[45]%d%d') or string.find(result, '"errorCode"') or string.find(result, '"error"') then
+        local prefix = string.sub(result, 1, 200)
+        local is_json_error = prefix:match('^%s*%{[%s\r\n]*"error"%s*:') or
+                             prefix:match('^%s*%{[%s\r\n]*"errorCode"%s*:') or
+                             prefix:match('^%s*%{[%s\r\n]*"status"%s*:%s*[45]%d%d')
+        if not opts.allow_error_json and is_json_error then
             -- Try to extract error message from JSON (handle escaped quotes)
             -- Pattern: "message": "text" or "message": "text with \"escaped\" quotes"
             local error_msg = string.match(result, '"message"%s*:%s*"([^"]*)"') or 
@@ -1334,7 +1545,7 @@ local function dns_rdap_callback(...)
     end
     
     local formatted = format_rdap_domain_result(data)
-    show_result_window("DNS Registration Info: " .. domain, formatted)
+    show_result_window_with_buttons("DNS Registration Info: " .. domain, formatted, "DNS RDAP", domain)
 end
 
 -------------------------------------------------
@@ -2031,7 +2242,7 @@ local function ip_rdap_callback(fieldname, ...)
     end
     
     local formatted = format_rdap_ip_result(data, ip, data._raw_response)
-    show_result_window("IP Registration Info (RDAP): " .. ip, formatted)
+    show_result_window_with_buttons("IP Registration Info (RDAP): " .. ip, formatted, "IP RDAP", ip)
 end
 
 -------------------------------------------------
@@ -2246,7 +2457,7 @@ local function ip_reputation_callback(fieldname, ...)
     end
     
     local formatted = format_abuseipdb_result(data, ip)
-    show_result_window("IP Reputation: " .. ip, formatted)
+    show_result_window_with_buttons("IP Reputation: " .. ip, formatted, "AbuseIPDB", ip)
 end
 
 -------------------------------------------------
@@ -2961,7 +3172,7 @@ local function url_reputation_callback(...)
     end
     
     local formatted = format_urlscan_result(data)
-    show_result_window("URL Reputation: " .. url, formatted)
+    show_result_window_with_buttons("URL Reputation: " .. url, formatted, "urlscan.io", url)
 end
 
 -------------------------------------------------
@@ -3360,7 +3571,7 @@ local function virustotal_ip_callback(fieldname, ...)
     end
     
     local formatted = format_virustotal_ip_result(data, ip)
-    show_result_window("VirusTotal IP: " .. ip, formatted)
+    show_result_window_with_buttons("VirusTotal IP: " .. ip, formatted, "VirusTotal IP", ip)
 end
 
 local function virustotal_domain_callback(...)
@@ -3379,7 +3590,7 @@ local function virustotal_domain_callback(...)
     end
     
     local formatted = format_virustotal_domain_result(data, domain)
-    show_result_window("VirusTotal Domain: " .. domain, formatted)
+    show_result_window_with_buttons("VirusTotal Domain: " .. domain, formatted, "VirusTotal Domain", domain)
 end
 
 local function format_virustotal_url_result(data, url, analysis_data)
@@ -3572,7 +3783,7 @@ local function virustotal_url_callback(...)
             
             -- Format and show results
             local formatted = format_virustotal_url_result(data, url, analysis_data)
-            show_result_window("VirusTotal URL: " .. url, formatted)
+            show_result_window_with_buttons("VirusTotal URL: " .. url, formatted, "VirusTotal URL", url)
         elseif data_type == "url" then
             -- Existing URL data - fetch full details
             log_message("VirusTotal: Found existing URL data")
@@ -3583,19 +3794,19 @@ local function virustotal_url_callback(...)
                 local url_data = parse_json(response)
                 if url_data then
                     local formatted = format_virustotal_url_result(url_data, url, nil)
-                    show_result_window("VirusTotal URL: " .. url, formatted)
+                    show_result_window_with_buttons("VirusTotal URL: " .. url, formatted, "VirusTotal URL", url)
                     return
                 end
             end
             
             -- Fallback: use the data we already have
             local formatted = format_virustotal_url_result(data, url, nil)
-            show_result_window("VirusTotal URL: " .. url, formatted)
+            show_result_window_with_buttons("VirusTotal URL: " .. url, formatted, "VirusTotal URL", url)
         else
             -- Unknown type, try to show what we have
             log_message("VirusTotal: Unknown data type: " .. tostring(data_type))
             local formatted = format_virustotal_url_result(data, url, nil)
-            show_result_window("VirusTotal URL: " .. url, formatted)
+            show_result_window_with_buttons("VirusTotal URL: " .. url, formatted, "VirusTotal URL", url)
         end
     else
         -- Response structure doesn't match expected format
@@ -3608,7 +3819,7 @@ local function virustotal_url_callback(...)
         
         -- Try to show what we have anyway
         local formatted = format_virustotal_url_result(data, url, nil)
-        show_result_window("VirusTotal URL: " .. url, formatted)
+        show_result_window_with_buttons("VirusTotal URL: " .. url, formatted, "VirusTotal URL", url)
     end
 end
 
@@ -3617,7 +3828,9 @@ end
 -------------------------------------------------
 
 local function lookup_shodan_ip(ip)
-    if not CONFIG.SHODAN_ENABLED or CONFIG.SHODAN_API_KEY == "" then
+    local api_key = string.gsub(CONFIG.SHODAN_API_KEY or "", "%s+", "")
+    ip = tostring(ip or ""):gsub("%s+", "")
+    if not CONFIG.SHODAN_ENABLED or api_key == "" then
         return nil, "Shodan API key not configured.\n\n" ..
                     "Option 1: Create file ~/.ask/SHODAN_API_KEY.txt with your API key\n" ..
                     "Option 2: Set environment variable: export SHODAN_API_KEY=\"your_key\"\n" ..
@@ -3636,98 +3849,84 @@ local function lookup_shodan_ip(ip)
         return cached, nil
     end
     
-    local url = string.format("https://api.shodan.io/shodan/host/%s?key=%s", ip, CONFIG.SHODAN_API_KEY)
+    local encoded_ip = url_encode(ip)
+    local url = string.format("https://api.shodan.io/shodan/host/%s?key=%s", encoded_ip, api_key)
+    if not url or url == "" then
+        return nil, "Shodan API Error: Invalid URL (empty). Check IP and API key formatting."
+    end
     log_message("Querying Shodan for IP: " .. ip)
     
     local response, err = http_get(url, {
         ["Accept"] = "application/json",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.1"
-    })
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+    }, { allow_error_json = true })
     if err then
-        -- Check for Cloudflare errors
-        if string.find(err, "Cloudflare") or string.find(err, "cloudflare") or 
-           string.find(err, "Direct IP access not allowed") or
-           string.find(err, "Site Not Configured") or
-           string.find(err, "404 Not Found") then
-            return nil, "Shodan API Error: Cloudflare Protection / Invalid Endpoint\n\n" ..
-                       "Received error: " .. err .. "\n\n" ..
-                       "This might indicate:\n" ..
-                       "- Invalid or missing API key\n" ..
-                       "- API key not properly configured\n" ..
-                       "- API endpoint issue (Cloudflare protection)\n" ..
-                       "- Rate limiting or access restrictions\n\n" ..
-                       "Troubleshooting:\n" ..
-                       "1. Verify your API key is correct at: https://account.shodan.io/\n" ..
-                       "2. Check API key file: ~/.ask/SHODAN_API_KEY.txt\n" ..
-                       "3. Ensure API key has no extra spaces or newlines\n" ..
-                       "4. Verify API key has proper permissions\n" ..
-                       "5. Note: Shodan host lookup requires paid membership ($49+)\n" ..
-                       "6. Free accounts cannot access IP host information\n\n" ..
-                       "If the error persists, try:\n" ..
-                       "- Checking Shodan API status: https://status.shodan.io/\n" ..
-                       "- Using other ASK features (AbuseIPDB, VirusTotal, RDAP) which are free"
-        end
-        
-        -- Check if error message is just "Title" (unhelpful)
-        if err == "HTTP error: Title" or string.find(err, "^HTTP error: Title$") then
-            -- Log raw response for debugging
-            log_message("Shodan: Received 'Title' error, checking raw response")
-            return nil, "Shodan API Error: Invalid Response\n\n" ..
-                       "Received an error response from Shodan API.\n\n" ..
-                       "Possible causes:\n" ..
-                       "- Invalid or missing API key\n" ..
-                       "- API key requires paid membership (host lookup needs $49+ membership)\n" ..
-                       "- Rate limiting or access restrictions\n\n" ..
-                       "Troubleshooting:\n" ..
-                       "1. Verify your API key at: https://account.shodan.io/\n" ..
-                       "2. Check if you have Shodan Membership (required for host lookup)\n" ..
-                       "3. Upgrade at: https://account.shodan.io/billing\n" ..
-                       "4. Use other ASK features (AbuseIPDB, VirusTotal, RDAP) which are free"
-        end
-        
-        return nil, err
+        return nil, "Shodan API Error: " .. err
     end
     
     if not response or response == "" then
         return nil, "Shodan API returned empty response"
     end
     
-    -- Log raw response for debugging if it looks like an error
-    if string.find(response, "cloudflare") or string.find(response, "Cloudflare") or
-       string.find(response, "error") or string.find(response, "Error") or
-       string.find(response, "title") or string.find(response, "Title") or
-       string.find(response, "Site Not Configured") or string.find(response, "404 Not Found") then
-        log_message("Shodan: Response contains error indicators (first 500 chars): " .. string.sub(response, 1, 500))
+    -- Check for HTML error pages (Cloudflare, Azure, etc.) before parsing JSON
+    -- IMPORTANT: Only check at the START of response, not embedded in JSON data
+    local trimmed = string.gsub(response, "^%s+", "")
+    local is_html = string.find(trimmed, "^<!DOCTYPE") or 
+                   string.find(trimmed, "^<html") or 
+                   string.find(trimmed, "^<HTML") or
+                   string.find(trimmed, "^<head>") or
+                   string.find(trimmed, "^<body>")
+    
+    -- Check for error page indicators (but only if not already JSON)
+    local has_error_indicators = false
+    if not is_html then
+        -- Only check for error page text if we haven't already detected HTML tags
+        local starts_with_json = string.find(trimmed, "^{")
+        if not starts_with_json then
+            -- Not JSON, so check for error page indicators
+            has_error_indicators = string.find(response, "Microsoft Azure Web App") or
+                                  string.find(response, "Site Not Configured") or
+                                  string.find(response, "Error 404") or
+                                  string.find(response, "403 Forbidden")
+        end
+    end
+    
+    if is_html or has_error_indicators then
+        log_message("Shodan: Received HTML/error page (first 500 chars): " .. string.sub(response, 1, 500))
+        return nil, "Shodan API Error: Invalid Response (HTML instead of JSON)\n\n" ..
+                   "Received an HTML error page instead of JSON response.\n" ..
+                   "Response preview: " .. string.sub(response, 1, 200) .. "\n\n" ..
+                   "Common causes:\n" ..
+                   "- API endpoint routing issue (Cloudflare/Azure error)\n" ..
+                   "- Invalid or missing API key\n" ..
+                   "- Rate limiting or access restrictions\n\n" ..
+                   "Troubleshooting:\n" ..
+                   "1. Verify your API key is correct at: https://account.shodan.io/\n" ..
+                   "2. Check API key file: ~/.ask/SHODAN_API_KEY.txt (ensure no extra spaces/newlines)\n" ..
+                   "3. Verify API key has proper permissions\n" ..
+                   "4. Note: Shodan host lookup requires paid membership ($49+)\n" ..
+                   "5. Try again in a few moments (may be temporary API issue)\n\n" ..
+                   "Alternative: Use other ASK features (AbuseIPDB, VirusTotal, RDAP, IPinfo)"
+    end
+    
+    -- Check if response looks like valid JSON (starts with { or [)
+    local trimmed_response = string.gsub(response, "^%s+", "")
+    if not string.find(trimmed_response, "^[%{%[]") then
+        log_message("Shodan: Response doesn't look like JSON (first 500 chars): " .. string.sub(response, 1, 500))
+        return nil, "Shodan API Error: Invalid Response Format\n\n" ..
+                   "Response doesn't appear to be valid JSON.\n" ..
+                   "Response preview: " .. string.sub(response, 1, 200) .. "\n\n" ..
+                   "This usually indicates an API routing or configuration issue.\n" ..
+                   "Please try again later or use alternative ASK features."
     end
     
     local data = parse_json(response)
     if not data then
-        -- Check if response is HTML (Cloudflare error page)
-        if string.find(response, "<!DOCTYPE") or string.find(response, "<html") or
-           string.find(response, "Cloudflare") or string.find(response, "cloudflare") or
-           string.find(response, "Site Not Configured") or string.find(response, "404 Not Found") then
-            return nil, "Shodan API Error: Cloudflare Protection / Invalid Endpoint\n\n" ..
-                       "Received an HTML error page instead of JSON response.\n" ..
-                       "Error: Site Not Configured | 404 Not Found\n\n" ..
-                       "This usually means:\n" ..
-                       "- Invalid or missing API key\n" ..
-                       "- API endpoint issue (Cloudflare protection)\n" ..
-                       "- API key doesn't have proper permissions\n\n" ..
-                       "Troubleshooting:\n" ..
-                       "1. Verify your API key is correct at: https://account.shodan.io/\n" ..
-                       "2. Check API key file: ~/.ask/SHODAN_API_KEY.txt\n" ..
-                       "3. Ensure API key has no extra spaces or newlines\n" ..
-                       "4. Verify API key has access to host lookup endpoint\n" ..
-                       "5. Note: Shodan host lookup requires paid membership ($49+)\n" ..
-                       "6. Free accounts cannot access IP host information\n\n" ..
-                       "If the error persists:\n" ..
-                       "- Check Shodan API status: https://status.shodan.io/\n" ..
-                       "- Use other ASK features (AbuseIPDB, VirusTotal, RDAP) which are free"
-        end
-        
-        -- Log raw response for debugging
         log_message("Shodan: Failed to parse JSON. Raw response (first 500 chars): " .. string.sub(response, 1, 500))
-        return nil, "Failed to parse Shodan response. Raw response: " .. string.sub(response, 1, 200)
+        return nil, "Failed to parse Shodan response.\n\n" ..
+                   "Response preview: " .. string.sub(response, 1, 300) .. "\n\n" ..
+                   "The response appears to be malformed or truncated JSON.\n" ..
+                   "Please try again or use alternative ASK features."
     end
     
     -- Check for Shodan API errors
@@ -3803,6 +4002,7 @@ local function format_shodan_result(data)
     if not data then return "No data available" end
     
     local result = "=== IP Intelligence (Shodan) ===\n\n"
+    result = result .. "ASK Build: " .. ASK_BUILD .. "\n\n"
     
     if data.ip_str then
         result = result .. "IP Address: " .. data.ip_str .. "\n"
@@ -3930,7 +4130,7 @@ local function shodan_ip_callback(fieldname, ...)
     end
     
     local formatted = format_shodan_result(data)
-    show_result_window("Shodan IP: " .. ip, formatted)
+    show_result_window_with_buttons("Shodan IP: " .. ip, formatted, "Shodan", ip)
 end
 
 -------------------------------------------------
@@ -4202,7 +4402,7 @@ local function ipinfo_ip_callback(fieldname, ...)
     end
     
     local formatted = format_ipinfo_result(data, ip)
-    show_result_window("IPinfo IP Intelligence: " .. ip, formatted)
+    show_result_window_with_buttons("IPinfo IP Intelligence: " .. ip, formatted, "IPinfo", ip)
 end
 
 -------------------------------------------------
@@ -4233,7 +4433,7 @@ local function lookup_greynoise_ip(ip)
     -- GreyNoise Community API doesn't require authentication
     local headers = {
         ["Accept"] = "application/json",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.1"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
     }
     
     local response, err = http_get(url, headers)
@@ -4481,6 +4681,1083 @@ local function greynoise_ip_callback(fieldname, ...)
     
     local formatted = format_greynoise_result(data, ip)
     show_result_window("GreyNoise IP Intelligence: " .. ip, formatted)
+end
+
+-------------------------------------------------
+--- AlienVault OTX (Open Threat Exchange) Module
+-------------------------------------------------
+
+-- Lookup IP address in OTX
+local function lookup_otx_ip(ip)
+    if not CONFIG.OTX_ENABLED then
+        return nil, "OTX is disabled in configuration"
+    end
+    
+    if not CONFIG.OTX_API_KEY or CONFIG.OTX_API_KEY == "" then
+        return nil, "OTX API key not configured. Please set OTX_API_KEY environment variable or create ~/.ask/OTX_API_KEY.txt"
+    end
+    
+    if not is_valid_ip(ip) then
+        return nil, "Invalid IP address"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("otx_ip", ip)
+    if cached then
+        log_message("Using cached OTX data for IP: " .. ip)
+        return cached, nil
+    end
+    
+    -- Determine IP version for endpoint
+    local ip_type = is_valid_ipv6(ip) and "IPv6" or "IPv4"
+    local url = string.format("%s/indicators/%s/%s/general", CONFIG.OTX_API_URL, ip_type, ip)
+    
+    log_message("Querying OTX API for IP: " .. ip)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+    }
+    
+    local response, err = http_get(url, headers)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "OTX API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse OTX response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.error then
+        return nil, "OTX API Error: " .. tostring(data.error)
+    end
+    
+    -- Cache the result
+    cache_set("otx_ip", ip, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Lookup domain in OTX
+local function lookup_otx_domain(domain)
+    if not CONFIG.OTX_ENABLED then
+        return nil, "OTX is disabled in configuration"
+    end
+    
+    if not CONFIG.OTX_API_KEY or CONFIG.OTX_API_KEY == "" then
+        return nil, "OTX API key not configured. Please set OTX_API_KEY environment variable or create ~/.ask/OTX_API_KEY.txt"
+    end
+    
+    if not domain or domain == "" then
+        return nil, "Invalid domain"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("otx_domain", domain)
+    if cached then
+        log_message("Using cached OTX data for domain: " .. domain)
+        return cached, nil
+    end
+    
+    local url = string.format("%s/indicators/domain/%s/general", CONFIG.OTX_API_URL, url_encode(domain))
+    
+    log_message("Querying OTX API for domain: " .. domain)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+    }
+    
+    local response, err = http_get(url, headers)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "OTX API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse OTX response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.error then
+        return nil, "OTX API Error: " .. tostring(data.error)
+    end
+    
+    -- Cache the result
+    cache_set("otx_domain", domain, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Lookup URL in OTX
+local function lookup_otx_url(url)
+    if not CONFIG.OTX_ENABLED then
+        return nil, "OTX is disabled in configuration"
+    end
+    
+    if not CONFIG.OTX_API_KEY or CONFIG.OTX_API_KEY == "" then
+        return nil, "OTX API key not configured. Please set OTX_API_KEY environment variable or create ~/.ask/OTX_API_KEY.txt"
+    end
+    
+    if not url or url == "" then
+        return nil, "Invalid URL"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("otx_url", url)
+    if cached then
+        log_message("Using cached OTX data for URL: " .. url)
+        return cached, nil
+    end
+    
+    -- OTX requires URL encoding for the URL parameter
+    local encoded_url = url_encode(url)
+    local api_url = string.format("%s/indicators/url/%s/general", CONFIG.OTX_API_URL, encoded_url)
+    
+    log_message("Querying OTX API for URL: " .. url)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+    }
+    
+    local response, err = http_get(api_url, headers)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "OTX API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse OTX response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.error then
+        return nil, "OTX API Error: " .. tostring(data.error)
+    end
+    
+    -- Cache the result
+    cache_set("otx_url", url, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Format OTX IP result
+local function format_otx_ip_result(data, ip)
+    ip = ip or "unknown"
+    
+    if not data then
+        return "=== AlienVault OTX IP Intelligence ===\n\n" ..
+               "Query: " .. ip .. "\n\n" ..
+               "No data available from OTX for this IP address.\n" ..
+               "This could mean:\n" ..
+               "- The IP has not been observed in any threat intelligence reports\n" ..
+               "- The IP is not in OTX's database\n" ..
+               "- The IP is clean and has no associated threats"
+    end
+    
+    local result = "=== AlienVault OTX IP Intelligence ===\n\n"
+    result = result .. "Query: " .. ip .. "\n\n"
+    
+    -- Indicator type
+    if data.type then
+        result = result .. "--- Indicator Type ---\n"
+        result = result .. "Type: " .. tostring(data.type) .. "\n\n"
+    end
+    
+    -- Reputation score (0-100, higher is more suspicious)
+    if data.reputation then
+        result = result .. "--- Reputation Score ---\n"
+        local rep = tonumber(data.reputation) or 0
+        result = result .. "Score: " .. rep .. "/100\n"
+        if rep >= 75 then
+            result = result .. "Status: HIGH RISK - Strong indicators of malicious activity\n"
+        elseif rep >= 50 then
+            result = result .. "Status: MODERATE RISK - Some suspicious indicators\n"
+        elseif rep >= 25 then
+            result = result .. "Status: LOW RISK - Minor suspicious indicators\n"
+        else
+            result = result .. "Status: CLEAN - No significant threat indicators\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- Pulse information (threat intelligence reports)
+    if data.pulse_info then
+        local pulse_count = data.pulse_info.count or 0
+        if pulse_count > 0 then
+            result = result .. "--- Threat Intelligence Reports (Pulses) ---\n"
+            result = result .. "Total Pulses: " .. pulse_count .. "\n\n"
+            
+            if data.pulse_info.pulses and #data.pulse_info.pulses > 0 then
+                result = result .. "Recent Threat Reports:\n"
+                local pulse_limit = math.min(5, #data.pulse_info.pulses)  -- Show up to 5 pulses
+                for i = 1, pulse_limit do
+                    local pulse = data.pulse_info.pulses[i]
+                    result = result .. "\n" .. i .. ". "
+                    if pulse.name then
+                        result = result .. pulse.name .. "\n"
+                    end
+                    if pulse.description then
+                        result = result .. "   Description: " .. string.sub(pulse.description, 1, 100)
+                        if string.len(pulse.description) > 100 then
+                            result = result .. "..."
+                        end
+                        result = result .. "\n"
+                    end
+                    if pulse.author and pulse.author.username then
+                        result = result .. "   Author: " .. pulse.author.username .. "\n"
+                    end
+                    if pulse.created then
+                        result = result .. "   Created: " .. pulse.created .. "\n"
+                    end
+                    if pulse.TLP then
+                        result = result .. "   TLP: " .. pulse.TLP .. "\n"
+                    end
+                    if pulse.tags and #pulse.tags > 0 then
+                        result = result .. "   Tags: " .. table.concat(pulse.tags, ", ") .. "\n"
+                    end
+                end
+                if pulse_count > pulse_limit then
+                    result = result .. "\n... and " .. (pulse_count - pulse_limit) .. " more pulse(s)\n"
+                end
+                result = result .. "\n"
+            end
+        else
+            result = result .. "--- Threat Intelligence Reports ---\n"
+            result = result .. "No threat intelligence pulses found for this IP.\n\n"
+        end
+    end
+    
+    -- Geographic information
+    if data.country_name or data.asn then
+        result = result .. "--- Geographic Information ---\n"
+        if data.country_name then
+            result = result .. "Country: " .. data.country_name .. "\n"
+        end
+        if data.asn then
+            result = result .. "ASN: " .. data.asn .. "\n"
+        end
+        if data.latitude and data.longitude then
+            result = result .. "Coordinates: " .. data.latitude .. ", " .. data.longitude .. "\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- Available sections
+    if data.sections and #data.sections > 0 then
+        result = result .. "--- Available Data Sections ---\n"
+        result = result .. "Additional data available: " .. table.concat(data.sections, ", ") .. "\n"
+        result = result .. "\n"
+    end
+    
+    -- Link to OTX
+    result = result .. "--- Additional Information ---\n"
+    result = result .. "View full details: https://otx.alienvault.com/indicator/ip/" .. ip .. "\n"
+    result = result .. "\nNote: OTX is a free, community-driven threat intelligence platform.\n"
+    result = result .. "For more detailed analysis, visit the OTX website.\n"
+    
+    return result
+end
+
+-- Format OTX domain result
+local function format_otx_domain_result(data, domain)
+    domain = domain or "unknown"
+    
+    if not data then
+        return "=== AlienVault OTX Domain Intelligence ===\n\n" ..
+               "Query: " .. domain .. "\n\n" ..
+               "No data available from OTX for this domain.\n" ..
+               "This could mean:\n" ..
+               "- The domain has not been observed in any threat intelligence reports\n" ..
+               "- The domain is not in OTX's database\n" ..
+               "- The domain is clean and has no associated threats"
+    end
+    
+    local result = "=== AlienVault OTX Domain Intelligence ===\n\n"
+    result = result .. "Query: " .. domain .. "\n\n"
+    
+    -- Pulse information (threat intelligence reports)
+    if data.pulse_info then
+        local pulse_count = data.pulse_info.count or 0
+        if pulse_count > 0 then
+            result = result .. "--- Threat Intelligence Reports (Pulses) ---\n"
+            result = result .. "Total Pulses: " .. pulse_count .. "\n\n"
+            
+            if data.pulse_info.pulses and #data.pulse_info.pulses > 0 then
+                result = result .. "Recent Threat Reports:\n"
+                local pulse_limit = math.min(5, #data.pulse_info.pulses)  -- Show up to 5 pulses
+                for i = 1, pulse_limit do
+                    local pulse = data.pulse_info.pulses[i]
+                    result = result .. "\n" .. i .. ". "
+                    if pulse.name then
+                        result = result .. pulse.name .. "\n"
+                    end
+                    if pulse.description then
+                        result = result .. "   Description: " .. string.sub(pulse.description, 1, 100)
+                        if string.len(pulse.description) > 100 then
+                            result = result .. "..."
+                        end
+                        result = result .. "\n"
+                    end
+                    if pulse.author and pulse.author.username then
+                        result = result .. "   Author: " .. pulse.author.username .. "\n"
+                    end
+                    if pulse.created then
+                        result = result .. "   Created: " .. pulse.created .. "\n"
+                    end
+                    if pulse.TLP then
+                        result = result .. "   TLP: " .. pulse.TLP .. "\n"
+                    end
+                    if pulse.tags and #pulse.tags > 0 then
+                        result = result .. "   Tags: " .. table.concat(pulse.tags, ", ") .. "\n"
+                    end
+                end
+                if pulse_count > pulse_limit then
+                    result = result .. "\n... and " .. (pulse_count - pulse_limit) .. " more pulse(s)\n"
+                end
+                result = result .. "\n"
+            end
+        else
+            result = result .. "--- Threat Intelligence Reports ---\n"
+            result = result .. "No threat intelligence pulses found for this domain.\n\n"
+        end
+    end
+    
+    -- Available sections
+    if data.sections and #data.sections > 0 then
+        result = result .. "--- Available Data Sections ---\n"
+        result = result .. "Additional data available: " .. table.concat(data.sections, ", ") .. "\n"
+        result = result .. "\n"
+    end
+    
+    -- Link to OTX
+    result = result .. "--- Additional Information ---\n"
+    result = result .. "View full details: https://otx.alienvault.com/indicator/domain/" .. url_encode(domain) .. "\n"
+    result = result .. "\nNote: OTX is a free, community-driven threat intelligence platform.\n"
+    result = result .. "For more detailed analysis, visit the OTX website.\n"
+    
+    return result
+end
+
+-- Format OTX URL result
+local function format_otx_url_result(data, url)
+    url = url or "unknown"
+    
+    if not data then
+        return "=== AlienVault OTX URL Intelligence ===\n\n" ..
+               "Query: " .. url .. "\n\n" ..
+               "No data available from OTX for this URL.\n" ..
+               "This could mean:\n" ..
+               "- The URL has not been observed in any threat intelligence reports\n" ..
+               "- The URL is not in OTX's database\n" ..
+               "- The URL is clean and has no associated threats"
+    end
+    
+    local result = "=== AlienVault OTX URL Intelligence ===\n\n"
+    result = result .. "Query: " .. url .. "\n\n"
+    
+    -- Pulse information (threat intelligence reports)
+    if data.pulse_info then
+        local pulse_count = data.pulse_info.count or 0
+        if pulse_count > 0 then
+            result = result .. "--- Threat Intelligence Reports (Pulses) ---\n"
+            result = result .. "Total Pulses: " .. pulse_count .. "\n\n"
+            
+            if data.pulse_info.pulses and #data.pulse_info.pulses > 0 then
+                result = result .. "Recent Threat Reports:\n"
+                local pulse_limit = math.min(5, #data.pulse_info.pulses)  -- Show up to 5 pulses
+                for i = 1, pulse_limit do
+                    local pulse = data.pulse_info.pulses[i]
+                    result = result .. "\n" .. i .. ". "
+                    if pulse.name then
+                        result = result .. pulse.name .. "\n"
+                    end
+                    if pulse.description then
+                        result = result .. "   Description: " .. string.sub(pulse.description, 1, 100)
+                        if string.len(pulse.description) > 100 then
+                            result = result .. "..."
+                        end
+                        result = result .. "\n"
+                    end
+                    if pulse.author and pulse.author.username then
+                        result = result .. "   Author: " .. pulse.author.username .. "\n"
+                    end
+                    if pulse.created then
+                        result = result .. "   Created: " .. pulse.created .. "\n"
+                    end
+                    if pulse.TLP then
+                        result = result .. "   TLP: " .. pulse.TLP .. "\n"
+                    end
+                    if pulse.tags and #pulse.tags > 0 then
+                        result = result .. "   Tags: " .. table.concat(pulse.tags, ", ") .. "\n"
+                    end
+                end
+                if pulse_count > pulse_limit then
+                    result = result .. "\n... and " .. (pulse_count - pulse_limit) .. " more pulse(s)\n"
+                end
+                result = result .. "\n"
+            end
+        else
+            result = result .. "--- Threat Intelligence Reports ---\n"
+            result = result .. "No threat intelligence pulses found for this URL.\n\n"
+        end
+    end
+    
+    -- Available sections
+    if data.sections and #data.sections > 0 then
+        result = result .. "--- Available Data Sections ---\n"
+        result = result .. "Additional data available: " .. table.concat(data.sections, ", ") .. "\n"
+        result = result .. "\n"
+    end
+    
+    -- Link to OTX
+    result = result .. "--- Additional Information ---\n"
+    result = result .. "View full details: https://otx.alienvault.com/indicator/url/" .. url_encode(url) .. "\n"
+    result = result .. "\nNote: OTX is a free, community-driven threat intelligence platform.\n"
+    result = result .. "For more detailed analysis, visit the OTX website.\n"
+    
+    return result
+end
+
+-- OTX IP callback
+local function otx_ip_callback(fieldname, ...)
+    local fields = {...}
+    local ip_raw = get_field_value(fieldname, "display", fields)
+    
+    if not ip_raw then
+        show_error_window("OTX IP Lookup", "Could not extract IP address from packet")
+        return
+    end
+    
+    -- Extract IP address from the field value (might contain hostname)
+    local ip = extract_ip_from_string(ip_raw)
+    if not ip then
+        show_error_window("OTX IP Lookup", "Could not extract valid IP address from: " .. ip_raw)
+        return
+    end
+    
+    -- Check if this is an RFC 1918 private address
+    if is_rfc1918_private(ip) then
+        local formatted = format_rfc1918_info(ip)
+        show_result_window("Private IP Address: " .. ip, formatted)
+        return
+    end
+    
+    local data, err = lookup_otx_ip(ip)
+    if err then
+        show_error_window("OTX Error", "Error querying OTX:\n" .. err)
+        return
+    end
+    
+    local formatted = format_otx_ip_result(data, ip)
+    show_result_window("AlienVault OTX IP Intelligence: " .. ip, formatted)
+end
+
+-- OTX domain callback
+local function otx_domain_callback(...)
+    local fields = {...}
+    local domain = get_field_value("dns.qry.name", "display", fields)
+    
+    if not domain then
+        show_error_window("OTX Domain Lookup", "Could not extract domain from packet")
+        return
+    end
+    
+    local data, err = lookup_otx_domain(domain)
+    if err then
+        show_error_window("OTX Error", "Error querying OTX:\n" .. err)
+        return
+    end
+    
+    local formatted = format_otx_domain_result(data, domain)
+    show_result_window("AlienVault OTX Domain Intelligence: " .. domain, formatted)
+end
+
+-- OTX URL callback
+local function otx_url_callback(...)
+    local fields = {...}
+    local url = get_field_value("http.request.full_uri", "display", fields)
+    
+    if not url then
+        show_error_window("OTX URL Lookup", "Could not extract URL from packet")
+        return
+    end
+    
+    local data, err = lookup_otx_url(url)
+    if err then
+        show_error_window("OTX Error", "Error querying OTX:\n" .. err)
+        return
+    end
+    
+    local formatted = format_otx_url_result(data, url)
+    show_result_window("AlienVault OTX URL Intelligence: " .. url, formatted)
+end
+
+-------------------------------------------------
+--- Abuse.ch (URLhaus & ThreatFox) Module
+-------------------------------------------------
+
+-- Lookup URL in URLhaus
+local function lookup_urlhaus_url(url)
+    if not CONFIG.ABUSECH_ENABLED then
+        return nil, "Abuse.ch is disabled in configuration"
+    end
+    
+    if not CONFIG.ABUSECH_API_KEY or CONFIG.ABUSECH_API_KEY == "" then
+        return nil, "Abuse.ch API key not configured. Please set ABUSECH_API_KEY environment variable or create ~/.ask/ABUSECH_API_KEY.txt"
+    end
+    
+    if not url or url == "" then
+        return nil, "Invalid URL"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("urlhaus_url", url)
+    if cached then
+        log_message("Using cached URLhaus data for URL: " .. url)
+        return cached, nil
+    end
+    
+    local api_url = CONFIG.URLHAUS_API_URL .. "/url/"
+    
+    log_message("Querying URLhaus API for URL: " .. url)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
+        ["Content-Type"] = "application/x-www-form-urlencoded",
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+    }
+    
+    -- URLhaus requires POST with url parameter
+    local post_data = "url=" .. url_encode(url)
+    
+    local response, err = http_post(api_url, headers, post_data)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "URLhaus API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse URLhaus response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.query_status then
+        if data.query_status == "no_results" then
+            return {query_status = "no_results"}, nil
+        elseif data.query_status ~= "ok" then
+            return nil, "URLhaus API Error: " .. tostring(data.query_status)
+        end
+    end
+    
+    -- Cache the result
+    cache_set("urlhaus_url", url, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Lookup host (IP or domain) in URLhaus
+local function lookup_urlhaus_host(host)
+    if not CONFIG.ABUSECH_ENABLED then
+        return nil, "Abuse.ch is disabled in configuration"
+    end
+    
+    if not CONFIG.ABUSECH_API_KEY or CONFIG.ABUSECH_API_KEY == "" then
+        return nil, "Abuse.ch API key not configured. Please set ABUSECH_API_KEY environment variable or create ~/.ask/ABUSECH_API_KEY.txt"
+    end
+    
+    if not host or host == "" then
+        return nil, "Invalid host"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("urlhaus_host", host)
+    if cached then
+        log_message("Using cached URLhaus data for host: " .. host)
+        return cached, nil
+    end
+    
+    local api_url = CONFIG.URLHAUS_API_URL .. "/host/"
+    
+    log_message("Querying URLhaus API for host: " .. host)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
+        ["Content-Type"] = "application/x-www-form-urlencoded",
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+    }
+    
+    -- URLhaus requires POST with host parameter
+    local post_data = "host=" .. url_encode(host)
+    
+    local response, err = http_post(api_url, headers, post_data)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "URLhaus API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse URLhaus response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.query_status then
+        if data.query_status == "no_results" then
+            return {query_status = "no_results"}, nil
+        elseif data.query_status ~= "ok" then
+            return nil, "URLhaus API Error: " .. tostring(data.query_status)
+        end
+    end
+    
+    -- Cache the result
+    cache_set("urlhaus_host", host, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Search IOC in ThreatFox
+local function lookup_threatfox_ioc(ioc)
+    if not CONFIG.ABUSECH_ENABLED then
+        return nil, "Abuse.ch is disabled in configuration"
+    end
+    
+    if not CONFIG.ABUSECH_API_KEY or CONFIG.ABUSECH_API_KEY == "" then
+        return nil, "Abuse.ch API key not configured. Please set ABUSECH_API_KEY environment variable or create ~/.ask/ABUSECH_API_KEY.txt"
+    end
+    
+    if not ioc or ioc == "" then
+        return nil, "Invalid IOC"
+    end
+    
+    -- Check cache first
+    local cached = cache_get("threatfox_ioc", ioc)
+    if cached then
+        log_message("Using cached ThreatFox data for IOC: " .. ioc)
+        return cached, nil
+    end
+    
+    local api_url = CONFIG.THREATFOX_API_URL .. "/"
+    
+    log_message("Querying ThreatFox API for IOC: " .. ioc)
+    
+    local headers = {
+        ["Accept"] = "application/json",
+        ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
+        ["Content-Type"] = "application/json",
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+    }
+    
+    -- ThreatFox requires JSON POST body
+    local json_body = string.format('{"query": "search_ioc", "search_term": "%s", "exact_match": true}', 
+                                    string.gsub(ioc, '"', '\\"'))
+    
+    local response, err = http_post(api_url, headers, json_body)
+    if err then
+        return nil, err
+    end
+    
+    if not response or response == "" then
+        return nil, "ThreatFox API returned empty response"
+    end
+    
+    local data = parse_json(response)
+    if not data then
+        return nil, "Failed to parse ThreatFox response. Raw response: " .. string.sub(response, 1, 200)
+    end
+    
+    -- Check for API errors
+    if data.query_status and data.query_status ~= "ok" then
+        -- ThreatFox returns "no_result" (singular) when no results found
+        if data.query_status == "no_results" or data.query_status == "no_result" then
+            return {query_status = "no_results", data = {}}, nil
+        else
+            return nil, "ThreatFox API Error: " .. tostring(data.query_status)
+        end
+    end
+    
+    -- Cache the result
+    cache_set("threatfox_ioc", ioc, data, CONFIG.CACHE_TTL_REPUTATION)
+    
+    return data, nil
+end
+
+-- Format URLhaus URL result
+local function format_urlhaus_url_result(data, url)
+    url = url or "unknown"
+    
+    if not data or data.query_status == "no_results" then
+        return "=== URLhaus URL Intelligence ===\n\n" ..
+               "Query: " .. url .. "\n\n" ..
+               "No data available from URLhaus for this URL.\n" ..
+               "This could mean:\n" ..
+               "- The URL has not been observed distributing malware\n" ..
+               "- The URL is not in URLhaus's database\n" ..
+               "- The URL is clean and has no associated threats"
+    end
+    
+    local result = "=== URLhaus URL Intelligence ===\n\n"
+    result = result .. "Query: " .. url .. "\n\n"
+    
+    -- URL status
+    if data.url_status then
+        result = result .. "--- URL Status ---\n"
+        result = result .. "Status: " .. data.url_status .. "\n"
+        if data.url_status == "online" then
+            result = result .. "⚠️ WARNING: URL is currently ONLINE and serving malware!\n"
+        elseif data.url_status == "offline" then
+            result = result .. "✓ URL is offline (no longer serving malware)\n"
+            if data.last_online then
+                result = result .. "Last Online: " .. data.last_online .. "\n"
+            end
+        end
+        result = result .. "\n"
+    end
+    
+    -- Threat type
+    if data.threat then
+        result = result .. "--- Threat Type ---\n"
+        result = result .. "Type: " .. data.threat .. "\n\n"
+    end
+    
+    -- Blacklists
+    if data.blacklists then
+        result = result .. "--- Blacklist Status ---\n"
+        if data.blacklists.spamhaus_dbl and data.blacklists.spamhaus_dbl ~= "not listed" then
+            result = result .. "Spamhaus DBL: " .. data.blacklists.spamhaus_dbl .. " ⚠️\n"
+        end
+        if data.blacklists.surbl and data.blacklists.surbl == "listed" then
+            result = result .. "SURBL: Listed ⚠️\n"
+        end
+        if (not data.blacklists.spamhaus_dbl or data.blacklists.spamhaus_dbl == "not listed") and
+           (not data.blacklists.surbl or data.blacklists.surbl == "not listed") then
+            result = result .. "Not listed on major blacklists\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- Tags
+    if data.tags and #data.tags > 0 then
+        result = result .. "--- Tags ---\n"
+        result = result .. table.concat(data.tags, ", ") .. "\n\n"
+    end
+    
+    -- Payloads
+    if data.payloads and #data.payloads > 0 then
+        result = result .. "--- Malware Payloads ---\n"
+        result = result .. "Total Payloads: " .. #data.payloads .. "\n\n"
+        local payload_limit = math.min(5, #data.payloads)
+        for i = 1, payload_limit do
+            local payload = data.payloads[i]
+            result = result .. i .. ". "
+            if payload.filename then
+                result = result .. "Filename: " .. payload.filename .. "\n"
+            end
+            if payload.file_type then
+                result = result .. "   Type: " .. payload.file_type .. "\n"
+            end
+            if payload.response_sha256 then
+                result = result .. "   SHA256: " .. payload.response_sha256 .. "\n"
+            end
+            if payload.signature then
+                result = result .. "   Malware Family: " .. payload.signature .. "\n"
+            end
+            if payload.firstseen then
+                result = result .. "   First Seen: " .. payload.firstseen .. "\n"
+            end
+            result = result .. "\n"
+        end
+        if #data.payloads > payload_limit then
+            result = result .. "... and " .. (#data.payloads - payload_limit) .. " more payload(s)\n\n"
+        end
+    end
+    
+    -- Date added
+    if data.date_added then
+        result = result .. "--- Timeline ---\n"
+        result = result .. "Date Added: " .. data.date_added .. "\n\n"
+    end
+    
+    -- Link to URLhaus
+    if data.urlhaus_reference then
+        result = result .. "--- Additional Information ---\n"
+        result = result .. "View full details: " .. data.urlhaus_reference .. "\n"
+    else
+        result = result .. "--- Additional Information ---\n"
+        result = result .. "View full details: https://urlhaus.abuse.ch/url/" .. url_encode(url) .. "\n"
+    end
+    result = result .. "\nNote: URLhaus tracks malware distribution URLs.\n"
+    
+    return result
+end
+
+-- Format URLhaus host result
+local function format_urlhaus_host_result(data, host)
+    host = host or "unknown"
+    
+    if not data or data.query_status == "no_results" then
+        return "=== URLhaus Host Intelligence ===\n\n" ..
+               "Query: " .. host .. "\n\n" ..
+               "No data available from URLhaus for this host.\n" ..
+               "This could mean:\n" ..
+               "- The host has not been observed hosting malware URLs\n" ..
+               "- The host is not in URLhaus's database\n" ..
+               "- The host is clean and has no associated threats"
+    end
+    
+    local result = "=== URLhaus Host Intelligence ===\n\n"
+    result = result .. "Query: " .. host .. "\n\n"
+    
+    -- URL count
+    if data.url_count then
+        result = result .. "--- Summary ---\n"
+        result = result .. "Malware URLs Observed: " .. data.url_count .. "\n"
+        if data.firstseen then
+            result = result .. "First Seen: " .. data.firstseen .. "\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- Blacklists
+    if data.blacklists then
+        result = result .. "--- Blacklist Status ---\n"
+        if data.blacklists.spamhaus_dbl and data.blacklists.spamhaus_dbl ~= "not listed" then
+            result = result .. "Spamhaus DBL: " .. data.blacklists.spamhaus_dbl .. " ⚠️\n"
+        end
+        if data.blacklists.surbl and data.blacklists.surbl == "listed" then
+            result = result .. "SURBL: Listed ⚠️\n"
+        end
+        if (not data.blacklists.spamhaus_dbl or data.blacklists.spamhaus_dbl == "not listed") and
+           (not data.blacklists.surbl or data.blacklists.surbl == "not listed") then
+            result = result .. "Not listed on major blacklists\n"
+        end
+        result = result .. "\n"
+    end
+    
+    -- URLs
+    if data.urls and #data.urls > 0 then
+        result = result .. "--- Malware URLs ---\n"
+        local url_limit = math.min(10, #data.urls)
+        for i = 1, url_limit do
+            local url_data = data.urls[i]
+            result = result .. i .. ". " .. (url_data.url or "unknown") .. "\n"
+            if url_data.url_status then
+                result = result .. "   Status: " .. url_data.url_status .. "\n"
+            end
+            if url_data.threat then
+                result = result .. "   Threat: " .. url_data.threat .. "\n"
+            end
+            if url_data.tags and #url_data.tags > 0 then
+                result = result .. "   Tags: " .. table.concat(url_data.tags, ", ") .. "\n"
+            end
+            result = result .. "\n"
+        end
+        if #data.urls > url_limit then
+            result = result .. "... and " .. (#data.urls - url_limit) .. " more URL(s)\n\n"
+        end
+    end
+    
+    -- Link to URLhaus
+    if data.urlhaus_reference then
+        result = result .. "--- Additional Information ---\n"
+        result = result .. "View full details: " .. data.urlhaus_reference .. "\n"
+    else
+        result = result .. "--- Additional Information ---\n"
+        result = result .. "View full details: https://urlhaus.abuse.ch/host/" .. url_encode(host) .. "\n"
+    end
+    result = result .. "\nNote: URLhaus tracks malware distribution URLs.\n"
+    
+    return result
+end
+
+-- Format ThreatFox IOC result
+local function format_threatfox_ioc_result(data, ioc)
+    ioc = ioc or "unknown"
+    
+    if not data or data.query_status == "no_results" or data.query_status == "no_result" or not data.data or #data.data == 0 then
+        return "=== ThreatFox IOC Intelligence ===\n\n" ..
+               "Query: " .. ioc .. "\n\n" ..
+               "No data available from ThreatFox for this IOC.\n" ..
+               "This could mean:\n" ..
+               "- The IOC has not been observed in any threat intelligence reports\n" ..
+               "- The IOC is not in ThreatFox's database\n" ..
+               "- The IOC is clean and has no associated threats"
+    end
+    
+    local result = "=== ThreatFox IOC Intelligence ===\n\n"
+    result = result .. "Query: " .. ioc .. "\n\n"
+    
+    -- Show up to 5 results
+    local result_limit = math.min(5, #data.data)
+    result = result .. "Found " .. #data.data .. " IOC(s) (showing " .. result_limit .. ")\n\n"
+    
+    for i = 1, result_limit do
+        local ioc_data = data.data[i]
+        result = result .. "--- IOC #" .. i .. " ---\n"
+        
+        if ioc_data.ioc then
+            result = result .. "IOC: " .. ioc_data.ioc .. "\n"
+        end
+        
+        if ioc_data.threat_type_desc then
+            result = result .. "Threat Type: " .. ioc_data.threat_type_desc .. "\n"
+        end
+        
+        if ioc_data.malware_printable then
+            result = result .. "Malware Family: " .. ioc_data.malware_printable
+            if ioc_data.malware_alias then
+                result = result .. " (" .. ioc_data.malware_alias .. ")"
+            end
+            result = result .. "\n"
+        end
+        
+        if ioc_data.confidence_level then
+            result = result .. "Confidence Level: " .. ioc_data.confidence_level .. "/100\n"
+        end
+        
+        if ioc_data.first_seen then
+            result = result .. "First Seen: " .. ioc_data.first_seen .. "\n"
+        end
+        
+        if ioc_data.last_seen then
+            result = result .. "Last Seen: " .. ioc_data.last_seen .. "\n"
+        end
+        
+        if ioc_data.tags and #ioc_data.tags > 0 then
+            result = result .. "Tags: " .. table.concat(ioc_data.tags, ", ") .. "\n"
+        end
+        
+        if ioc_data.reference then
+            result = result .. "Reference: " .. ioc_data.reference .. "\n"
+        end
+        
+        result = result .. "\n"
+    end
+    
+    if #data.data > result_limit then
+        result = result .. "... and " .. (#data.data - result_limit) .. " more IOC(s)\n\n"
+    end
+    
+    result = result .. "--- Additional Information ---\n"
+    result = result .. "View full details: https://threatfox.abuse.ch\n"
+    result = result .. "\nNote: ThreatFox tracks IOCs (Indicators of Compromise) including botnet C&C servers.\n"
+    
+    return result
+end
+
+-- URLhaus URL callback
+local function urlhaus_url_callback(...)
+    local fields = {...}
+    local url = get_field_value("http.request.full_uri", "display", fields)
+    
+    if not url then
+        show_error_window("URLhaus URL Lookup", "Could not extract URL from packet")
+        return
+    end
+    
+    local data, err = lookup_urlhaus_url(url)
+    if err then
+        show_error_window("URLhaus Error", "Error querying URLhaus:\n" .. err)
+        return
+    end
+    
+    local formatted = format_urlhaus_url_result(data, url)
+    show_result_window("URLhaus URL Intelligence: " .. url, formatted)
+end
+
+-- URLhaus host callback
+local function urlhaus_host_callback(fieldname, ...)
+    local fields = {...}
+    local host_raw = get_field_value(fieldname, "display", fields)
+    
+    if not host_raw then
+        show_error_window("URLhaus Host Lookup", "Could not extract host from packet")
+        return
+    end
+    
+    -- Extract IP or domain from the field value
+    local host = extract_ip_from_string(host_raw) or host_raw
+    if not host or host == "" then
+        show_error_window("URLhaus Host Lookup", "Could not extract valid host from: " .. host_raw)
+        return
+    end
+    
+    -- Check if this is an RFC 1918 private address
+    if is_rfc1918_private(host) then
+        local formatted = format_rfc1918_info(host)
+        show_result_window("Private IP Address: " .. host, formatted)
+        return
+    end
+    
+    local data, err = lookup_urlhaus_host(host)
+    if err then
+        show_error_window("URLhaus Error", "Error querying URLhaus:\n" .. err)
+        return
+    end
+    
+    local formatted = format_urlhaus_host_result(data, host)
+    show_result_window("URLhaus Host Intelligence: " .. host, formatted)
+end
+
+-- ThreatFox IOC callback
+local function threatfox_ioc_callback(fieldname, ...)
+    local fields = {...}
+    local ioc_raw = get_field_value(fieldname, "display", fields)
+    
+    if not ioc_raw then
+        show_error_window("ThreatFox IOC Lookup", "Could not extract IOC from packet")
+        return
+    end
+    
+    -- Extract IP, domain, or use as-is for URL
+    local ioc = extract_ip_from_string(ioc_raw) or ioc_raw
+    if not ioc or ioc == "" then
+        show_error_window("ThreatFox IOC Lookup", "Could not extract valid IOC from: " .. ioc_raw)
+        return
+    end
+    
+    -- Check if this is an RFC 1918 private address
+    if is_rfc1918_private(ioc) then
+        local formatted = format_rfc1918_info(ioc)
+        show_result_window("Private IP Address: " .. ioc, formatted)
+        return
+    end
+    
+    local data, err = lookup_threatfox_ioc(ioc)
+    if err then
+        show_error_window("ThreatFox Error", "Error querying ThreatFox:\n" .. err)
+        return
+    end
+    
+    local formatted = format_threatfox_ioc_result(data, ioc)
+    show_result_window("ThreatFox IOC Intelligence: " .. ioc, formatted)
 end
 
 -------------------------------------------------
@@ -4766,105 +6043,387 @@ end
 -- Certificate Validity Checker (OpenSSL)
 -------------------------------------------------
 
-local function check_certificate_validity(hostname, port)
+-- Execute command silently on Windows (suppress command window)
+-- This function is used by certificate check and DNS functions
+local function execute_silent_cert(cmd)
+    local is_windows = package.config:sub(1,1) == "\\"
+    
+    if is_windows then
+        -- On Windows, use VBScript to run command completely silently (no window flash)
+        local temp_out = os.tmpname() .. ".txt"
+        local temp_vbs = os.tmpname() .. ".vbs"
+        
+        -- Escape quotes in command for VBScript (double them)
+        local escaped_cmd = cmd:gsub('"', '""')
+        
+        -- Create VBScript that runs command silently (window style 0 = hidden)
+        local vbs_content = string.format([[
+Set WshShell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+WshShell.Run "cmd /c %s > ""%s"" 2>&1", 0, True
+Set f = fso.OpenTextFile("%s", 1)
+If Not f.AtEndOfStream Then
+    WScript.StdOut.Write f.ReadAll
+End If
+f.Close
+fso.DeleteFile "%s"
+]], escaped_cmd, temp_out, temp_out, temp_out)
+        
+        local vbs_file = io.open(temp_vbs, "w")
+        if vbs_file then
+            vbs_file:write(vbs_content)
+            vbs_file:close()
+            
+            -- Execute VBScript (runs silently, //nologo suppresses VBScript banner)
+            local handle = io.popen(string.format('cscript //nologo "%s"', temp_vbs))
+            local output = ""
+            if handle then
+                output = handle:read("*a") or ""
+                handle:close()
+            end
+            
+            -- Clean up VBScript file
+            os.remove(temp_vbs)
+            
+            return output
+        end
+        
+        -- Fallback: use io.popen if VBScript creation fails
+        local handle = io.popen(cmd .. " 2>&1")
+        if handle then
+            local result = handle:read("*a") or ""
+            handle:close()
+            return result
+        end
+        return ""
+    else
+        -- On Unix-like systems, use io.popen normally
+        local handle = io.popen(cmd .. " 2>&1")
+        if handle then
+            local result = handle:read("*a") or ""
+            handle:close()
+            return result
+        end
+        return ""
+    end
+end
+
+-- Query SSLLabs API for certificate and TLS analysis
+local function check_certificate_ssllabs(hostname, port)
     port = port or 443
     
-    -- Check if openssl is available
-    local openssl_available, openssl_info = check_openssl_available()
-    if not openssl_available then
-        -- Determine platform for installation instructions
-        local platform = "unknown"
-        local install_instructions = ""
+    -- Remove protocol prefix if present
+    local domain = string.gsub(hostname, "^https?://", "")
+    domain = string.gsub(domain, "^www%.", "")
+    
+    -- SSLLabs API endpoint (free, no API key required)
+    local api_url = "https://api.ssllabs.com/api/v3/analyze?host=" .. domain
+    
+    log_message("Querying SSLLabs API for certificate: " .. domain)
+    
+    -- Step 1: Start a new assessment (or get cached results)
+    -- Use startNew=off to prefer cached results, fromCache=on to allow cache
+    local start_url = api_url .. "&startNew=off&fromCache=on&all=done"
+    
+    local response, err = http_get(start_url, {})
+    if err then
+        return nil, "SSLLabs API query failed: " .. err
+    end
+    
+    if not response or response == "" then
+        return nil, "Empty response from SSLLabs API"
+    end
+    
+    -- Parse initial JSON response
+    local json_data = parse_json(response)
+    if not json_data then
+        return nil, "Failed to parse SSLLabs API JSON response"
+    end
+    
+    -- Check for errors in response
+    if json_data.errors and #json_data.errors > 0 then
+        local error_msg = json_data.errors[1].message or "Unknown error from SSLLabs API"
+        return nil, error_msg
+    end
+    
+    -- Check status: READY, IN_PROGRESS, DNS, ERROR
+    local status = json_data.status
+    
+    if status == "ERROR" then
+        return nil, "SSLLabs API returned error for domain: " .. domain
+    end
+    
+    -- If not ready, we need to poll
+    if status ~= "READY" then
+        log_message("SSLLabs assessment in progress, status: " .. status)
         
-        if package.config:sub(1,1) == "\\" then
-            -- Windows
-            platform = "Windows"
-            install_instructions = "\n\nInstallation Instructions for Windows:\n" ..
-                                  "1. Download OpenSSL from: https://slproweb.com/products/Win32OpenSSL.html\n" ..
-                                  "   OR install via Chocolatey: choco install openssl\n" ..
-                                  "   OR install via Git for Windows (includes OpenSSL)\n" ..
-                                  "2. Add OpenSSL to your system PATH\n" ..
-                                  "3. Restart Wireshark\n\n" ..
-                                  "Alternative: Use Git Bash which includes OpenSSL"
-        else
-            -- Try to detect macOS vs Linux
-            local uname_handle = io.popen("uname -s 2>&1")
-            if uname_handle then
-                local uname_output = uname_handle:read("*a")
-                uname_handle:close()
-                if string.find(uname_output, "Darwin") then
-                    platform = "macOS"
-                    install_instructions = "\n\nInstallation Instructions for macOS:\n" ..
-                                          "1. Install via Homebrew: brew install openssl\n" ..
-                                          "   OR install via MacPorts: sudo port install openssl\n" ..
-                                          "2. If using Homebrew, you may need to add to PATH:\n" ..
-                                          "   echo 'export PATH=\"/opt/homebrew/opt/openssl/bin:$PATH\"' >> ~/.zshrc\n" ..
-                                          "   source ~/.zshrc\n" ..
-                                          "3. Restart Wireshark\n\n" ..
-                                          "Note: macOS includes OpenSSL, but it may be outdated."
-                else
-                    platform = "Linux"
-                    install_instructions = "\n\nInstallation Instructions for Linux:\n" ..
-                                          "Debian/Ubuntu: sudo apt-get install openssl\n" ..
-                                          "RedHat/CentOS: sudo yum install openssl\n" ..
-                                          "Fedora: sudo dnf install openssl\n" ..
-                                          "Arch: sudo pacman -S openssl\n\n" ..
-                                          "After installation, restart Wireshark."
-                end
+        -- Poll up to 30 times with 2 second delay (60 seconds max)
+        local max_polls = 30
+        local poll_delay = 2
+        
+        for i = 1, max_polls do
+            -- Sleep using os.execute (cross-platform)
+            local sleep_cmd
+            if package.config:sub(1,1) == "\\" then
+                sleep_cmd = "timeout /t " .. poll_delay .. " >nul 2>&1"
+            else
+                sleep_cmd = "sleep " .. poll_delay
+            end
+            os.execute(sleep_cmd)
+            
+            -- Poll for status
+            log_message("Polling SSLLabs API (attempt " .. i .. "/" .. max_polls .. ")...")
+            response, err = http_get(api_url .. "&all=done", {})
+            
+            if err then
+                return nil, "SSLLabs API polling failed: " .. err
+            end
+            
+            json_data = parse_json(response)
+            if not json_data then
+                return nil, "Failed to parse SSLLabs API poll response"
+            end
+            
+            status = json_data.status
+            log_message("Poll status: " .. status)
+            
+            if status == "READY" then
+                break
+            elseif status == "ERROR" then
+                return nil, "SSLLabs API assessment failed for: " .. domain
             end
         end
         
-        return nil, "OpenSSL is not installed or not found in PATH.\n\n" ..
-                   "Platform detected: " .. platform .. "\n" ..
-                   install_instructions ..
-                   "OpenSSL is required for certificate validity checking."
+        if status ~= "READY" then
+            return nil, "SSLLabs API assessment timeout (still in progress). Try again in a few minutes.\n\nNote: SSLLabs performs comprehensive analysis which can take 60-120 seconds for first scan."
+        end
     end
+    
+    -- Extract certificate and TLS information from SSLLabs response
+    local result = {}
+    result.hostname = domain
+    result.port = port
+    result.source = "SSLLabs API"
+    result.raw_data = json_data  -- Store for detailed analysis
+    
+    -- Overall grade
+    if json_data.endpoints and #json_data.endpoints > 0 then
+        local endpoint = json_data.endpoints[1]
+        if endpoint.grade then
+            result.grade = endpoint.grade
+        end
+        
+        -- Get detailed endpoint data
+        if endpoint.details then
+            local details = endpoint.details
+            
+            -- Certificate information
+            if details.cert then
+                local cert = details.cert
+                
+                if cert.subject then
+                    result.subject = cert.subject
+                end
+                
+                if cert.issuerSubject then
+                    result.issuer = cert.issuerSubject
+                end
+                
+                if cert.notBefore then
+                    -- Convert from milliseconds timestamp
+                    result.notBefore = os.date("%Y-%m-%d %H:%M:%S UTC", cert.notBefore / 1000)
+                end
+                
+                if cert.notAfter then
+                    -- Convert from milliseconds timestamp
+                    local expiry_time = cert.notAfter / 1000
+                    result.notAfter = os.date("%Y-%m-%d %H:%M:%S UTC", expiry_time)
+                    
+                    -- Calculate days until expiry
+                    local current_time = os.time()
+                    local days_remaining = math.floor((expiry_time - current_time) / 86400)
+                    result.daysUntilExpiry = days_remaining
+                    result.isExpired = days_remaining < 0
+                end
+                
+                if cert.serialNumber then
+                    result.serial = cert.serialNumber
+                end
+                
+                if cert.sigAlg then
+                    result.algorithm = cert.sigAlg
+                end
+                
+                if cert.altNames then
+                    result.sans = table.concat(cert.altNames, ", ")
+                end
+                
+                if cert.sha1Hash then
+                    result.sha1 = cert.sha1Hash
+                end
+                
+                if cert.sha256Hash then
+                    result.sha256 = cert.sha256Hash
+                end
+            end
+            
+            -- Protocol support
+            if details.protocols then
+                local protocols = {}
+                for _, proto in ipairs(details.protocols) do
+                    table.insert(protocols, proto.name .. " " .. proto.version)
+                end
+                result.protocols = table.concat(protocols, ", ")
+            end
+            
+            -- Vulnerabilities
+            result.vulnerabilities = {}
+            if details.vulnBeast then result.vulnerabilities.BEAST = details.vulnBeast end
+            if details.heartbleed then result.vulnerabilities.Heartbleed = details.heartbleed end
+            if details.poodle then result.vulnerabilities.POODLE = details.poodle end
+            if details.freak then result.vulnerabilities.FREAK = details.freak end
+            if details.logjam then result.vulnerabilities.Logjam = details.logjam end
+            if details.drownVulnerable then result.vulnerabilities.DROWN = details.drownVulnerable end
+            
+            -- Additional security features
+            if details.supportsRc4 ~= nil then
+                result.supportsRc4 = details.supportsRc4
+            end
+            
+            if details.forwardSecrecy then
+                result.forwardSecrecy = details.forwardSecrecy
+            end
+            
+            if details.hstsPolicy then
+                result.hsts = details.hstsPolicy.status or "unknown"
+                if details.hstsPolicy.maxAge then
+                    result.hstsMaxAge = details.hstsPolicy.maxAge
+                end
+            end
+        end
+    end
+    
+    return result, nil
+end
+
+-- SSLChecker.com API for quick certificate validation
+local function check_certificate_sslchecker(hostname, port)
+    port = port or 443
+    
+    -- Remove protocol prefix if present
+    local domain = string.gsub(hostname, "^https?://", "")
+    domain = string.gsub(domain, "^www%.", "")
+    
+    log_message("Querying SSLChecker.com API for certificate: " .. domain)
+    
+    -- SSLChecker.com API endpoint (no API key required, free service)
+    -- Note: This is an unofficial API endpoint based on their public service
+    local api_url = string.format("https://www.sslchecker.com/certcheck?host=%s&port=%d", domain, port)
+    
+    -- Make HTTP GET request
+    local response, err = http_get(api_url, {})
+    if err then
+        return nil, "SSLChecker.com API query failed: " .. err
+    end
+    
+    if not response or response == "" then
+        return nil, "Empty response from SSLChecker.com API"
+    end
+    
+    -- Parse JSON response
+    local json_data = parse_json(response)
+    if not json_data then
+        -- If JSON parsing fails, fall back to OpenSSL
+        return nil, "Failed to parse SSLChecker.com API response"
+    end
+    
+    -- Extract certificate information
+    local result = {}
+    result.hostname = domain
+    result.port = port
+    result.source = "SSLChecker.com API"
+    
+    -- Map common fields
+    if json_data.subject then
+        result.subject = json_data.subject
+    end
+    
+    if json_data.issuer then
+        result.issuer = json_data.issuer
+    end
+    
+    if json_data.valid_from or json_data.notBefore then
+        result.notBefore = json_data.valid_from or json_data.notBefore
+    end
+    
+    if json_data.valid_to or json_data.notAfter or json_data.expires then
+        result.notAfter = json_data.valid_to or json_data.notAfter or json_data.expires
+    end
+    
+    if json_data.days_left or json_data.days_until_expiry then
+        result.daysUntilExpiry = tonumber(json_data.days_left or json_data.days_until_expiry)
+        result.isExpired = (result.daysUntilExpiry and result.daysUntilExpiry < 0) or false
+    end
+    
+    if json_data.serial or json_data.serialNumber then
+        result.serial = json_data.serial or json_data.serialNumber
+    end
+    
+    if json_data.algorithm or json_data.signature_algorithm then
+        result.algorithm = json_data.algorithm or json_data.signature_algorithm
+    end
+    
+    if json_data.san or json_data.sans then
+        local sans = json_data.san or json_data.sans
+        if type(sans) == "table" then
+            result.sans = table.concat(sans, ", ")
+        else
+            result.sans = sans
+        end
+    end
+    
+    return result, nil
+end
+
+-- OpenSSL-based basic certificate check (quick and simple)
+local function check_certificate_openssl(hostname, port)
+    port = port or 443
     
     -- Remove protocol prefix if present
     hostname = string.gsub(hostname, "^https?://", "")
     hostname = string.gsub(hostname, "^www%.", "")
     
-    -- Use openssl s_client to get certificate information
-    -- Windows needs different command format
+    local is_windows = package.config:sub(1,1) == "\\"
     local cmd
-    if package.config:sub(1,1) == "\\" then
-        -- Windows: use echo. instead of echo |
-        cmd = string.format("echo. | openssl s_client -connect %s:%d -servername %s 2>&1 | openssl x509 -noout -dates -subject -issuer 2>&1", 
-                            hostname, port, hostname)
-    else
-        -- Unix-like
-        cmd = string.format("echo | openssl s_client -connect %s:%d -servername %s 2>&1 | openssl x509 -noout -dates -subject -issuer 2>&1", 
-                            hostname, port, hostname)
-    end
+    local output
     
-    log_message("Checking certificate validity for: " .. hostname .. ":" .. port)
-    log_message("OpenSSL info: " .. (openssl_info or "unknown"))
+    log_message("Using OpenSSL fallback for: " .. hostname .. ":" .. port)
+    
+    if is_windows then
+        -- Windows: simple command
+        cmd = string.format('echo. | openssl s_client -connect %s:%d -servername %s 2^>nul | openssl x509 -noout -dates -subject -issuer 2^>^&1', hostname, port, hostname)
+    else
+        -- Unix-like: use pipe directly
+        cmd = string.format("echo | openssl s_client -connect %s:%d -servername %s 2>/dev/null | openssl x509 -noout -dates -subject -issuer 2>&1", hostname, port, hostname)
+    end
     
     local handle = io.popen(cmd)
-    if not handle then
-        return nil, "Failed to execute openssl command. Make sure openssl is installed and accessible."
+    if handle then
+        output = handle:read("*a")
+        handle:close()
+    else
+        return nil, "Failed to execute OpenSSL command"
     end
-    
-    local output = handle:read("*a")
-    local exit_code = handle:close()
     
     if not output or output == "" then
-        return nil, "No certificate information returned. The host may not support SSL/TLS on port " .. port
-    end
-    
-    -- Check for openssl errors
-    if string.find(output, "connect:") or string.find(output, "gethostbyname") then
-        return nil, "Failed to connect to " .. hostname .. ":" .. port .. "\n" .. output
-    end
-    
-    if string.find(output, "unable to load certificate") or string.find(output, "no peer certificate") then
-        return nil, "No certificate found for " .. hostname .. ":" .. port
+        return nil, "No certificate information returned from OpenSSL"
     end
     
     -- Parse certificate information
     local result = {}
     result.hostname = hostname
     result.port = port
+    result.source = "OpenSSL (fallback)"
     
     -- Extract subject
     local subject = string.match(output, "subject=([^\n]+)")
@@ -4888,74 +6447,125 @@ local function check_certificate_validity(hostname, port)
     local not_after = string.match(output, "notAfter=([^\n]+)")
     if not_after then
         result.notAfter = not_after
-    end
-    
-    -- Check if certificate is expired
-    if not_after then
-        -- Parse date: format is usually "Jan  1 00:00:00 2025 GMT" or similar
-        local year = string.match(not_after, "(%d%d%d%d)")
-        local month_str = string.match(not_after, "(%a%a%a)")
-        local day = string.match(not_after, "%a%a%a%s+(%d+)")
         
+        -- Simple expiry check
+        local year = string.match(not_after, "(%d%d%d%d)")
         if year then
             local year_num = tonumber(year)
             local current_year = tonumber(os.date("%Y"))
-            local current_month = tonumber(os.date("%m"))
-            local current_day = tonumber(os.date("%d"))
-            
-            -- Simple month name to number mapping
-            local month_map = {
-                Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
-                Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12
-            }
-            
-            local expiry_month = month_str and month_map[month_str] or 12
-            local expiry_day_num = day and tonumber(day) or 31
-            
-            local is_expired = false
-            if year_num < current_year then
-                is_expired = true
-            elseif year_num == current_year then
-                if expiry_month < current_month then
-                    is_expired = true
-                elseif expiry_month == current_month and expiry_day_num < current_day then
-                    is_expired = true
-                end
-            end
-            
-            result.isExpired = is_expired
-            result.expiresThisYear = (year_num == current_year)
-            
-            -- Calculate days until expiration (rough estimate)
-            if not is_expired and year_num == current_year and expiry_month == current_month then
-                result.daysUntilExpiry = expiry_day_num - current_day
-            end
+            result.isExpired = (year_num < current_year)
         end
     end
     
     return result, nil
 end
 
+local function check_certificate_validity(hostname, port)
+    port = port or 443
+    
+    -- Try SSLLabs API (no API key required, comprehensive analysis)
+    if curl_available then
+        log_message("Attempting certificate check via SSLLabs API")
+        local api_result, api_err = check_certificate_ssllabs(hostname, port)
+        if not api_err and api_result then
+            log_message("SSLLabs API certificate check successful")
+            return api_result, nil
+        elseif api_err then
+            log_message("SSLLabs API certificate check failed: " .. api_err)
+            
+            -- Check if it's a capacity error (rate limiting)
+            if string.find(api_err:lower(), "capacity") or string.find(api_err:lower(), "try again later") then
+                -- Try OpenSSL fallback
+                local openssl_available = check_openssl_available()
+                if openssl_available then
+                    log_message("SSLLabs at capacity, trying OpenSSL fallback...")
+                    local openssl_result, openssl_err = check_certificate_openssl(hostname, port)
+                    if not openssl_err and openssl_result then
+                        log_message("OpenSSL fallback successful")
+                        return openssl_result, nil
+                    else
+                        -- Both failed, return informative error
+                        return nil, "⚠ SSLLabs API Error: Running at full capacity. Please try again later.\n\n" ..
+                                   "OpenSSL fallback also failed: " .. (openssl_err or "unknown error") .. "\n\n" ..
+                                   "Note: SSLLabs provides comprehensive security analysis but may be busy.\n" ..
+                                   "Try again in a few minutes for full security grading and vulnerability detection."
+                    end
+                else
+                    -- No OpenSSL available
+                    return nil, "⚠ SSLLabs API Error: Running at full capacity. Please try again later.\n\n" ..
+                               "Note: SSLLabs provides comprehensive security analysis but may be busy during peak times.\n" ..
+                               "Please try again in a few minutes for full security grading and vulnerability detection.\n\n" ..
+                               "Alternative: Install OpenSSL for basic certificate checking as a fallback option.\n" ..
+                               "  • macOS: brew install openssl\n" ..
+                               "  • Linux: apt-get/yum/dnf install openssl\n" ..
+                               "  • Windows: Download from https://slproweb.com/products/Win32OpenSSL.html"
+                end
+            else
+                -- Other error, return as-is
+                return nil, api_err
+            end
+        end
+    else
+        return nil, "curl is not available. SSLLabs API requires curl for HTTPS requests."
+    end
+    
+    return nil, "Certificate check failed"
+end
+
 local function format_cert_validity_result(data, hostname)
     if not data then
-        return "=== Certificate Validity Check ===\n\n" ..
+        return "=== SSL/TLS Certificate & Security Analysis ===\n\n" ..
                "No certificate data available for: " .. (hostname or "unknown")
     end
     
-    local result = "=== Certificate Validity Check ===\n\n"
-    result = result .. "--- How This Check Works ---\n"
-    result = result .. "This certificate check uses OpenSSL's s_client command to:\n"
-    result = result .. "• Connect directly to the server (external view)\n"
-    result = result .. "• Retrieve the actual certificate presented by the server\n"
-    result = result .. "• Extract certificate details (subject, issuer, validity dates)\n"
-    result = result .. "• Verify expiration status and calculate days remaining\n\n"
-    result = result .. "Method: openssl s_client -connect <hostname>:<port> -servername <hostname>\n"
-    result = result .. "This provides a real-time check of the certificate currently in use.\n\n"
+    local result = "=== SSL/TLS Certificate & Security Analysis ===\n\n"
+    
+    -- Show which method was used
+    if data.source == "SSLLabs API" then
+        result = result .. "--- Data Source ---\n"
+        result = result .. "Method: SSLLabs API v3 (Qualys SSL Labs)\n"
+        result = result .. "• Comprehensive SSL/TLS security analysis\n"
+        result = result .. "• Industry-standard security grading\n"
+        result = result .. "• Vulnerability detection (Heartbleed, POODLE, etc.)\n"
+        result = result .. "• Free service, no API key required\n\n"
+    elseif data.source == "OpenSSL (fallback)" or data.source == "OpenSSL" then
+        result = result .. "--- Data Source ---\n"
+        if data.source == "OpenSSL (fallback)" then
+            result = result .. "Method: OpenSSL (fallback - SSLLabs unavailable)\n"
+            result = result .. "⚠ Note: SSLLabs was at capacity. Using OpenSSL for basic check.\n\n"
+        else
+            result = result .. "Method: OpenSSL (Quick Check)\n"
+        end
+        result = result .. "• Basic certificate validation\n"
+        result = result .. "• Direct connection to server\n"
+        result = result .. "• Fast, no external API dependencies\n\n"
+    elseif data.source == "SSLChecker.com API" then
+        result = result .. "--- Data Source ---\n"
+        result = result .. "Method: SSLChecker.com API\n"
+        result = result .. "• Quick certificate validation\n"
+        result = result .. "• Basic security information\n"
+        result = result .. "• Free service, no API key required\n\n"
+    end
     
     result = result .. "Host: " .. (data.hostname or hostname or "unknown") .. "\n"
-    result = result .. "Port: " .. tostring(data.port or 443) .. "\n\n"
+    result = result .. "Port: " .. tostring(data.port or 443) .. "\n"
     
-    result = result .. "--- Certificate Information ---\n"
+    -- SSLLabs overall grade
+    if data.grade then
+        result = result .. "\n--- Overall Security Grade ---\n"
+        local grade_color = ""
+        if data.grade == "A+" or data.grade == "A" then
+            grade_color = "✓ "
+        elseif data.grade:match("^[BC]") then
+            grade_color = "⚠ "
+        else
+            grade_color = "⚠⚠ "
+        end
+        result = result .. grade_color .. "Grade: " .. data.grade .. "\n"
+        result = result .. "(A+ is best, F is worst)\n"
+    end
+    
+    result = result .. "\n--- Certificate Information ---\n"
     
     if data.subject then
         result = result .. "Subject: " .. data.subject .. "\n"
@@ -4963,6 +6573,15 @@ local function format_cert_validity_result(data, hostname)
     
     if data.issuer then
         result = result .. "Issuer: " .. data.issuer .. "\n"
+    end
+    
+    -- Additional certificate details from API
+    if data.serial then
+        result = result .. "Serial Number: " .. data.serial .. "\n"
+    end
+    
+    if data.algorithm then
+        result = result .. "Signature Algorithm: " .. data.algorithm .. "\n"
     end
     
     if data.notBefore then
@@ -4989,29 +6608,128 @@ local function format_cert_validity_result(data, hostname)
         end
     end
     
+    -- Protocol support
+    if data.protocols then
+        result = result .. "\n--- Supported Protocols ---\n"
+        result = result .. data.protocols .. "\n"
+    end
+    
+    -- Additional information from API
+    if data.sans then
+        result = result .. "\n--- Subject Alternative Names (SANs) ---\n"
+        if type(data.sans) == "table" then
+            for _, san in ipairs(data.sans) do
+                result = result .. "• " .. san .. "\n"
+            end
+        else
+            result = result .. data.sans .. "\n"
+        end
+    end
+    
+    -- Certificate fingerprints
+    if data.sha1 or data.sha256 then
+        result = result .. "\n--- Certificate Fingerprints ---\n"
+        if data.sha256 then
+            result = result .. "SHA256: " .. data.sha256 .. "\n"
+        end
+        if data.sha1 then
+            result = result .. "SHA1: " .. data.sha1 .. "\n"
+        end
+    end
+    
+    -- Vulnerabilities check
+    if data.vulnerabilities and next(data.vulnerabilities) then
+        result = result .. "\n--- Vulnerability Assessment ---\n"
+        local has_vulns = false
+        for vuln_name, vuln_status in pairs(data.vulnerabilities) do
+            if vuln_status == true then
+                result = result .. "⚠⚠ VULNERABLE: " .. vuln_name .. "\n"
+                has_vulns = true
+            elseif vuln_status == false then
+                result = result .. "✓ Not vulnerable: " .. vuln_name .. "\n"
+            end
+        end
+        if not has_vulns then
+            result = result .. "✓ No known vulnerabilities detected\n"
+        end
+    end
+    
+    -- Security features
+    if data.forwardSecrecy or data.supportsRc4 ~= nil or data.hsts then
+        result = result .. "\n--- Security Features ---\n"
+        
+        if data.forwardSecrecy then
+            local fs_str = tostring(data.forwardSecrecy)
+            if fs_str:find("4") then  -- Forward secrecy with all ciphers
+                result = result .. "✓ Forward Secrecy: Enabled (all ciphers)\n"
+            elseif fs_str:find("2") then  -- Forward secrecy with modern ciphers
+                result = result .. "✓ Forward Secrecy: Enabled (modern ciphers)\n"
+            else
+                result = result .. "Forward Secrecy: " .. fs_str .. "\n"
+            end
+        end
+        
+        if data.supportsRc4 ~= nil then
+            if data.supportsRc4 then
+                result = result .. "⚠ RC4 Support: Enabled (insecure, should be disabled)\n"
+            else
+                result = result .. "✓ RC4 Support: Disabled (good)\n"
+            end
+        end
+        
+        if data.hsts then
+            result = result .. "HSTS: " .. tostring(data.hsts)
+            if data.hstsMaxAge then
+                result = result .. " (max-age: " .. data.hstsMaxAge .. " seconds)"
+            end
+            result = result .. "\n"
+        end
+    end
+    
     result = result .. "\n--- Security Recommendations ---\n"
     if data.isExpired then
-        result = result .. "• Certificate is expired - immediate action required\n"
+        result = result .. "⚠⚠ URGENT: Certificate is expired!\n"
         result = result .. "• Replace certificate immediately\n"
         result = result .. "• Check certificate renewal process\n"
+        result = result .. "• Users will see security warnings\n"
     elseif data.daysUntilExpiry and data.daysUntilExpiry <= 30 then
-        result = result .. "• Certificate expires soon - plan renewal\n"
+        result = result .. "⚠ Certificate expires soon - plan renewal\n"
         result = result .. "• Set up automatic certificate renewal\n"
         result = result .. "• Consider using Let's Encrypt for auto-renewal\n"
     else
-        result = result .. "• Certificate is valid\n"
-        result = result .. "• Monitor expiration date\n"
-        result = result .. "• Consider setting up automatic renewal\n"
+        result = result .. "✓ Certificate validity period is good\n"
     end
+    
+    -- Grade-specific recommendations
+    if data.grade then
+        if data.grade:match("^[FT]") then
+            result = result .. "⚠⚠ Grade " .. data.grade .. " indicates serious security issues\n"
+            result = result .. "• Review SSLLabs report for detailed issues\n"
+            result = result .. "• Update TLS configuration immediately\n"
+        elseif data.grade:match("^[CD]") then
+            result = result .. "⚠ Grade " .. data.grade .. " indicates configuration weaknesses\n"
+            result = result .. "• Improve cipher suite selection\n"
+            result = result .. "• Enable forward secrecy\n"
+            result = result .. "• Disable weak protocols (SSLv3, TLS 1.0)\n"
+        elseif data.grade == "B" then
+            result = result .. "Grade B is acceptable but can be improved\n"
+            result = result .. "• Review SSLLabs recommendations\n"
+        end
+    end
+    
+    if data.supportsRc4 then
+        result = result .. "• Disable RC4 cipher support (insecure)\n"
+    end
+    
+    result = result .. "\n--- Additional Resources ---\n"
+    result = result .. "• Full SSLLabs Report: https://www.ssllabs.com/ssltest/analyze.html?d=" .. (data.hostname or hostname or "") .. "\n"
+    result = result .. "• Mozilla SSL Configuration Generator: https://ssl-config.mozilla.org/\n"
     
     return result
 end
 
-local function cert_validity_callback(...)
-    local fields = {...}
-    
-    -- Extract hostname from fields that actually contain hostname information
-    -- Priority: TLS SNI (Server Name Indication) > HTTP Host header
+-- Helper function to extract hostname for certificate checks
+local function extract_hostname_for_cert_check(fields, operation_name)
     local hostname = get_field_value("tls.handshake.extensions_server_name", "value", fields)
     
     if not hostname then
@@ -5019,7 +6737,7 @@ local function cert_validity_callback(...)
     end
     
     if not hostname then
-        show_error_window("Certificate Validity Check", "Could not extract hostname from packet.\n\n" ..
+        show_error_window(operation_name, "Could not extract hostname from packet.\n\n" ..
                          "This check requires a hostname to connect to the server.\n\n" ..
                          "Please right-click on:\n" ..
                          "• TLS Client Hello with SNI (tls.handshake.extensions_server_name)\n" ..
@@ -5028,7 +6746,7 @@ local function cert_validity_callback(...)
                          "   - This is in HTTP requests where the Host header is present\n\n" ..
                          "Note: Certificate fields (tls.handshake.certificate.*) do not contain\n" ..
                          "the hostname being accessed, only the certificate subject which may differ.")
-        return
+        return nil
     end
     
     -- Remove protocol prefix if present
@@ -5042,15 +6760,92 @@ local function cert_validity_callback(...)
         port = tonumber(tcp_port)
     end
     
-    -- Check certificate validity
+    return hostname, port
+end
+
+-- 1. Quick Certificate Check (OpenSSL) - Fast and simple
+local function quick_cert_check_callback(...)
+    local fields = {...}
+    local hostname, port = extract_hostname_for_cert_check(fields, "Quick Certificate Check")
+    if not hostname then return end
+    
+    -- Check if OpenSSL is available
+    local openssl_available = check_openssl_available()
+    if not openssl_available then
+        show_error_window("OpenSSL Not Available", 
+                         "OpenSSL is required for quick certificate checking.\n\n" ..
+                         "Installation:\n" ..
+                         "• macOS: brew install openssl\n" ..
+                         "• Linux: apt-get/yum/dnf install openssl\n" ..
+                         "• Windows: Download from https://slproweb.com/products/Win32OpenSSL.html\n\n" ..
+                         "Alternative: Use 'Certificate Validator' for API-based checking (no OpenSSL required)")
+        return
+    end
+    
+    local data, err = check_certificate_openssl(hostname, port)
+    if err then
+        show_error_window("Quick Certificate Check Error", "Error checking certificate:\n" .. err)
+        return
+    end
+    
+    data.source = "OpenSSL"  -- Mark as intentional OpenSSL use
+    local formatted = format_cert_validity_result(data, hostname)
+    show_result_window_with_buttons("Quick Certificate Check: " .. hostname, formatted, "Quick Certificate Check", hostname)
+end
+
+-- 2. Certificate Validator (SSLChecker.com) - Middle ground
+local function cert_validator_callback(...)
+    local fields = {...}
+    local hostname, port = extract_hostname_for_cert_check(fields, "Certificate Validator")
+    if not hostname then return end
+    
+    if not curl_available then
+        show_error_window("curl Not Available", "curl is required for SSLChecker.com API.\n\nPlease install curl first.")
+        return
+    end
+    
+    local data, err = check_certificate_sslchecker(hostname, port)
+    if err then
+        -- Try OpenSSL fallback
+        local openssl_available = check_openssl_available()
+        if openssl_available then
+            log_message("SSLChecker.com failed, trying OpenSSL fallback...")
+            data, err = check_certificate_openssl(hostname, port)
+            if not err and data then
+                data.source = "OpenSSL (fallback)"
+            end
+        end
+        
+        if err then
+            show_error_window("Certificate Validator Error", "Error checking certificate:\n" .. err)
+            return
+        end
+    end
+    
+    local formatted = format_cert_validity_result(data, hostname)
+    show_result_window_with_buttons("Certificate Validator: " .. hostname, formatted, "Certificate Validator", hostname)
+end
+
+-- 3. SSL Security Analysis (SSLLabs) - Comprehensive but slower
+local function ssl_security_analysis_callback(...)
+    local fields = {...}
+    local hostname, port = extract_hostname_for_cert_check(fields, "SSL Security Analysis")
+    if not hostname then return end
+    
+    -- Check certificate validity using SSLLabs (with automatic OpenSSL fallback on capacity errors)
     local data, err = check_certificate_validity(hostname, port)
     if err then
-        show_error_window("Certificate Validity Check Error", "Error checking certificate:\n" .. err)
+        show_error_window("SSL Security Analysis Error", "Error checking certificate:\n" .. err)
         return
     end
     
     local formatted = format_cert_validity_result(data, hostname)
-    show_result_window("Certificate Validity: " .. hostname, formatted)
+    show_result_window_with_buttons("SSL Security Analysis: " .. hostname, formatted, "SSL Security Analysis", hostname)
+end
+
+-- Legacy callback for backward compatibility (uses comprehensive check)
+local function cert_validity_callback(...)
+    ssl_security_analysis_callback(...)
 end
 
 -------------------------------------------------
@@ -5122,6 +6917,150 @@ fso.DeleteFile "%s"
 end
 
 -- Check which DNS tool is available (dig preferred, nslookup as fallback)
+-- Convert IP address to reverse DNS format for PTR queries
+local function ip_to_reverse_dns(ip)
+    if not ip or ip == "" then
+        return nil
+    end
+    
+    if is_valid_ipv4(ip) then
+        -- IPv4: reverse octets and append .in-addr.arpa
+        -- e.g., 1.2.3.4 -> 4.3.2.1.in-addr.arpa
+        local parts = {}
+        for part in string.gmatch(ip, "(%d+)") do
+            table.insert(parts, part)
+        end
+        if #parts == 4 then
+            return string.format("%s.%s.%s.%s.in-addr.arpa", parts[4], parts[3], parts[2], parts[1])
+        end
+    elseif is_valid_ipv6(ip) then
+        -- IPv6: expand, reverse nibbles, append .ip6.arpa
+        -- This is complex, so for IPv6 PTR we'll fall back to local tools
+        -- Full IPv6 expansion requires handling :: compression properly
+        return nil
+    end
+    
+    return nil
+end
+
+-- Query Cloudflare DNS over HTTPS (DoH) API
+local function cloudflare_doh_query(name, record_type)
+    record_type = record_type or "A"
+    
+    if not name or name == "" then
+        return nil, "Query name is required"
+    end
+    
+    -- Cloudflare DoH endpoint
+    local doh_url = "https://cloudflare-dns.com/dns-query"
+    
+    -- URL encode the name parameter (basic encoding for common cases)
+    local encoded_name = string.gsub(name, "([^%w%-%.])", function(c)
+        return string.format("%%%02X", string.byte(c))
+    end)
+    
+    -- Build query URL with parameters
+    local query_url = string.format("%s?name=%s&type=%s", doh_url, encoded_name, record_type)
+    
+    -- Set headers for JSON response
+    local headers = {
+        ["Accept"] = "application/dns-json"
+    }
+    
+    log_message("Querying Cloudflare DoH for: " .. name .. " (type: " .. record_type .. ")")
+    
+    -- Make HTTP GET request
+    local response, err = http_get(query_url, headers)
+    if err then
+        return nil, "Cloudflare DoH query failed: " .. err
+    end
+    
+    if not response or response == "" then
+        return nil, "Empty response from Cloudflare DoH"
+    end
+    
+    -- Parse JSON response
+    local json_data = parse_json(response)
+    if not json_data then
+        return nil, "Failed to parse Cloudflare DoH JSON response"
+    end
+    
+    -- Check for errors in response
+    if json_data.Status and json_data.Status ~= 0 then
+        local error_msg = json_data.Comment or ("DNS query failed with status: " .. tostring(json_data.Status))
+        -- Status 3 = NXDOMAIN (domain not found) - this is not an error, just no records
+        if json_data.Status == 3 then
+            return {
+                name = name,
+                type = record_type,
+                records = {},
+                status = json_data.Status,
+                comment = error_msg
+            }, nil
+        end
+        return nil, error_msg
+    end
+    
+    -- Extract answer records
+    local records = {}
+    if json_data.Answer and type(json_data.Answer) == "table" then
+        for _, answer in ipairs(json_data.Answer) do
+            if answer.type and answer.data then
+                -- Map DNS type numbers to names (common ones)
+                local type_map = {
+                    [1] = "A",
+                    [28] = "AAAA",
+                    [5] = "CNAME",
+                    [15] = "MX",
+                    [2] = "NS",
+                    [16] = "TXT",
+                    [6] = "SOA",
+                    [12] = "PTR"
+                }
+                local answer_type = type_map[answer.type] or tostring(answer.type)
+                
+                -- Extract data based on record type
+                local record_data = answer.data
+                
+                -- For MX records, data format is "priority domain"
+                if answer_type == "MX" then
+                    -- Keep full MX record (priority + domain)
+                    table.insert(records, record_data)
+                -- For SOA records, data is complex, keep as-is
+                elseif answer_type == "SOA" then
+                    table.insert(records, record_data)
+                -- For PTR, CNAME, NS - data is domain name
+                elseif answer_type == "PTR" or answer_type == "CNAME" or answer_type == "NS" then
+                    -- Remove trailing dot if present
+                    record_data = string.gsub(record_data, "%.$", "")
+                    table.insert(records, record_data)
+                -- For TXT records, data may be quoted
+                elseif answer_type == "TXT" then
+                    -- Remove quotes if present
+                    record_data = string.gsub(record_data, '^"(.*)"$', "%1")
+                    table.insert(records, record_data)
+                -- For A and AAAA, data is IP address
+                else
+                    table.insert(records, record_data)
+                end
+            end
+        end
+    end
+    
+    return {
+        name = name,
+        type = record_type,
+        records = records,
+        status = json_data.Status or 0,
+        tc = json_data.TC or false,  -- Truncated flag
+        rd = json_data.RD or false,  -- Recursion desired
+        ra = json_data.RA or false,  -- Recursion available
+        ad = json_data.AD or false,  -- Authenticated data
+        cd = json_data.CD or false   -- Checking disabled
+    }, nil
+end
+
+-- Check which DNS tool is available (dig or nslookup)
 local function check_dns_tool_available()
     local is_windows = package.config:sub(1,1) == "\\"
     local dig_available = false
@@ -5291,11 +7230,36 @@ local function reverse_dns_lookup(ip)
         return cached, nil
     end
     
+    -- Try Cloudflare DoH first (works cross-platform, no local tools needed)
+    if curl_available then
+        local reverse_name = ip_to_reverse_dns(ip)
+        if reverse_name then
+            log_message("Attempting Cloudflare DoH reverse DNS lookup for IP: " .. ip)
+            local doh_result, doh_err = cloudflare_doh_query(reverse_name, "PTR")
+            if not doh_err and doh_result and doh_result.records and #doh_result.records > 0 then
+                local result = {
+                    ip = ip,
+                    ptr_records = doh_result.records,
+                    primary_domain = doh_result.records[1]  -- Use first domain as primary
+                }
+                -- Cache the result
+                cache_set("reverse_dns", ip, result)
+                log_message("Cloudflare DoH reverse DNS lookup successful")
+                return result, nil
+            elseif doh_err then
+                log_message("Cloudflare DoH reverse DNS lookup failed: " .. doh_err .. " (falling back to local tools)")
+            end
+        elseif is_valid_ipv6(ip) then
+            log_message("IPv6 reverse DNS via Cloudflare DoH not yet supported, falling back to local tools")
+        end
+    end
+    
+    -- Fallback to local DNS tools if Cloudflare DoH failed or unavailable
     -- Check which DNS tool is available
     local dig_available, nslookup_available = check_dns_tool_available()
     
     if not dig_available and not nslookup_available then
-        return nil, "No DNS lookup tool found. Please install 'dig' (BIND tools) or ensure 'nslookup' is available."
+        return nil, "No DNS lookup tool found. Please install 'dig' (BIND tools) or ensure 'nslookup' is available. Cloudflare DoH also requires curl."
     end
     
     local cmd
@@ -5391,11 +7355,32 @@ local function dns_lookup(domain, record_type)
         return cached, nil
     end
     
+    -- Try Cloudflare DoH first (works cross-platform, no local tools needed)
+    if curl_available then
+        log_message("Attempting Cloudflare DoH DNS lookup for: " .. domain .. " (type: " .. record_type .. ")")
+        local doh_result, doh_err = cloudflare_doh_query(domain, record_type)
+        if not doh_err and doh_result then
+            -- Even if no records, return the result structure
+            local result = {
+                domain = domain,
+                record_type = record_type,
+                records = doh_result.records or {}
+            }
+            -- Cache the result
+            cache_set("dns_lookup", cache_key, result)
+            log_message("Cloudflare DoH DNS lookup successful")
+            return result, nil
+        elseif doh_err then
+            log_message("Cloudflare DoH DNS lookup failed: " .. doh_err .. " (falling back to local tools)")
+        end
+    end
+    
+    -- Fallback to local DNS tools if Cloudflare DoH failed or unavailable
     -- Check which DNS tool is available
     local dig_available, nslookup_available = check_dns_tool_available()
     
     if not dig_available and not nslookup_available then
-        return nil, "No DNS lookup tool found. Please install 'dig' (BIND tools) or ensure 'nslookup' is available."
+        return nil, "No DNS lookup tool found. Please install 'dig' (BIND tools) or ensure 'nslookup' is available. Cloudflare DoH also requires curl."
     end
     
     local cmd
@@ -5482,8 +7467,20 @@ local function lookup_dns_analytics(ip)
         ip = ip,
         reverse_dns = nil,
         forward_dns = {},
-        registration_info = nil
+        registration_info = nil,
+        ip_registration_info = nil,
+        forward_domain = nil,
+        forward_domain_source = nil,
+        candidate_domains = {}
     }
+
+    local function add_candidate(source, domain)
+        if not domain or domain == "" then return end
+        for _, c in ipairs(result.candidate_domains) do
+            if c.domain == domain then return end
+        end
+        table.insert(result.candidate_domains, { source = source, domain = domain })
+    end
     
     -- Step 1: Reverse DNS lookup (PTR)
     log_message("Step 1: Performing reverse DNS lookup for IP: " .. ip)
@@ -5493,30 +7490,78 @@ local function lookup_dns_analytics(ip)
         result.reverse_dns_error = ptr_err
     else
         result.reverse_dns = ptr_data
+        if ptr_data.primary_domain then
+            add_candidate("PTR", ptr_data.primary_domain)
+        end
+        if ptr_data.ptr_records then
+            for _, ptr in ipairs(ptr_data.ptr_records) do
+                add_candidate("PTR", ptr)
+            end
+        end
     end
     
-    -- Step 2: Forward DNS lookups if we have a domain
+    -- Step 2: Determine a domain for forward DNS
+    local forward_domain = nil
+    local forward_domain_source = nil
     if ptr_data and ptr_data.primary_domain then
-        local domain = ptr_data.primary_domain
-        log_message("Step 2: Performing forward DNS lookups for domain: " .. domain)
-        
-        -- Lookup important record types
+        forward_domain = ptr_data.primary_domain
+        forward_domain_source = "PTR"
+    end
+
+    -- Fallback: use IPinfo hostname if PTR is missing
+    if CONFIG.IPINFO_ENABLED and CONFIG.IPINFO_API_KEY ~= "" then
+        local ipinfo_data, ipinfo_err = lookup_ipinfo_ip(ip)
+        if not ipinfo_err and ipinfo_data and ipinfo_data.hostname and ipinfo_data.hostname ~= "" then
+            add_candidate("IPinfo", ipinfo_data.hostname)
+        end
+    end
+
+    -- Fallback: use Shodan hostnames if PTR/IPinfo missing
+    if CONFIG.SHODAN_ENABLED and CONFIG.SHODAN_API_KEY ~= "" then
+        local shodan_data, shodan_err = lookup_shodan_ip(ip)
+        if not shodan_err and shodan_data and shodan_data.hostnames and #shodan_data.hostnames > 0 then
+            for _, h in ipairs(shodan_data.hostnames) do
+                add_candidate("Shodan", h)
+            end
+        end
+    end
+
+    if not forward_domain and #result.candidate_domains > 0 then
+        forward_domain = result.candidate_domains[1].domain
+        forward_domain_source = result.candidate_domains[1].source
+    end
+
+    if forward_domain then
+        result.forward_domain = forward_domain
+        result.forward_domain_source = forward_domain_source
+        log_message("Step 2: Performing forward DNS lookups for domain: " .. forward_domain .. " (source: " .. forward_domain_source .. ")")
+
         local record_types = {"A", "AAAA", "MX", "TXT", "NS", "SOA", "CNAME"}
-        
         for _, rtype in ipairs(record_types) do
-            local dns_data, dns_err = dns_lookup(domain, rtype)
+            local dns_data, dns_err = dns_lookup(forward_domain, rtype)
             if not dns_err and dns_data and dns_data.records and type(dns_data.records) == "table" and #dns_data.records > 0 then
                 result.forward_dns[rtype] = dns_data.records
             end
         end
-        
+
         -- Step 3: Get registration info from RDAP
         if CONFIG.RDAP_ENABLED then
-            log_message("Step 3: Getting registration info from RDAP for domain: " .. domain)
-            local rdap_data, rdap_err = lookup_domain_rdap(domain)
+            log_message("Step 3: Getting registration info from RDAP for domain: " .. forward_domain)
+            local rdap_data, rdap_err = lookup_domain_rdap(forward_domain)
             if not rdap_err and rdap_data then
                 result.registration_info = rdap_data
             end
+        end
+    end
+
+    -- Step 4: IP registration info (RDAP) regardless of PTR
+    if CONFIG.RDAP_ENABLED then
+        log_message("Step 4: Getting IP registration info from RDAP for IP: " .. ip)
+        local ip_rdap_data, ip_rdap_err = lookup_ip_rdap(ip)
+        if not ip_rdap_err and ip_rdap_data then
+            result.ip_registration_info = ip_rdap_data
+        else
+            log_message("IP RDAP lookup failed: " .. tostring(ip_rdap_err))
         end
     end
     
@@ -5537,19 +7582,22 @@ local function format_dns_analytics_result(data, ip)
     end
     
     local result = "=== DNS Analytics ===\n\n"
-    result = result .. "IP Address: " .. (data.ip or ip) .. "\n\n"
+    result = result .. "IP Address: " .. (data.ip or ip) .. "\n"
+    result = result .. "ASK Build: " .. ASK_BUILD .. "\n\n"
     
     -- Reverse DNS (PTR Records)
     result = result .. "--- Reverse DNS (PTR Records) ---\n"
     if data.reverse_dns_error then
-        -- Check if error indicates dig is not available
+        -- Check if error indicates DNS tool is not available
         if string.find(data.reverse_dns_error:lower(), "not found") or 
            string.find(data.reverse_dns_error:lower(), "not recognized") or
            string.find(data.reverse_dns_error:lower(), "command not found") then
             result = result .. "ERROR: DNS lookup tool not available\n"
-            result = result .. "\nDNS Analytics requires 'dig' or 'nslookup'.\n"
+            result = result .. "\nDNS Analytics can use:\n"
+            result = result .. "  - Cloudflare DNS over HTTPS (requires curl)\n"
+            result = result .. "  - Local tools: 'dig' or 'nslookup'\n"
             result = result .. "On Windows, 'nslookup' should be available by default.\n"
-            result = result .. "Please install a DNS tool and restart Wireshark.\n"
+            result = result .. "Please install curl or a DNS tool and restart Wireshark.\n"
         else
             result = result .. "Error: " .. data.reverse_dns_error .. "\n"
         end
@@ -5563,6 +7611,29 @@ local function format_dns_analytics_result(data, ip)
     else
         result = result .. "No PTR record found\n"
     end
+
+    -- FQDN Candidates
+    result = result .. "\n--- FQDN Candidates ---\n"
+    if data.candidate_domains and #data.candidate_domains > 0 then
+        for i, c in ipairs(data.candidate_domains) do
+            result = result .. string.format("%d. %s (source: %s)\n", i, c.domain, c.source)
+        end
+    else
+        result = result .. "None (PTR/IPinfo/Shodan did not provide a hostname)\n"
+        local hints = {}
+        if not (data.reverse_dns and data.reverse_dns.primary_domain) then
+            table.insert(hints, "PTR missing")
+        end
+        if not CONFIG.IPINFO_API_KEY or CONFIG.IPINFO_API_KEY == "" then
+            table.insert(hints, "IPinfo key not configured")
+        end
+        if not CONFIG.SHODAN_API_KEY or CONFIG.SHODAN_API_KEY == "" then
+            table.insert(hints, "Shodan key not configured")
+        end
+        if #hints > 0 then
+            result = result .. "Hints: " .. table.concat(hints, "; ") .. "\n"
+        end
+    end
     
     -- Forward DNS Records
     if data.reverse_dns_error and (string.find(data.reverse_dns_error:lower(), "not found") or 
@@ -5571,8 +7642,13 @@ local function format_dns_analytics_result(data, ip)
         -- Skip forward DNS if DNS tool is not available
         result = result .. "\n--- Forward DNS Records ---\n"
         result = result .. "Cannot perform forward DNS lookups: DNS lookup tool not available\n"
+        result = result .. "DNS Analytics can use Cloudflare DoH (requires curl) or local tools (dig/nslookup).\n"
     elseif data.forward_dns and next(data.forward_dns) then
-        result = result .. "\n--- Forward DNS Records ---\n"
+        local src_note = ""
+        if data.forward_domain and data.forward_domain_source then
+            src_note = string.format(" (domain: %s, source: %s)", data.forward_domain, data.forward_domain_source)
+        end
+        result = result .. "\n--- Forward DNS Records" .. src_note .. " ---\n"
         
         -- A Records (IPv4)
         if data.forward_dns.A and #data.forward_dns.A > 0 then
@@ -5665,8 +7741,46 @@ local function format_dns_analytics_result(data, ip)
         if data.reverse_dns and data.reverse_dns.primary_domain then
             result = result .. "No forward DNS records found for: " .. data.reverse_dns.primary_domain .. "\n"
         else
+        if data.forward_domain and data.forward_domain_source then
+            result = result .. "No forward DNS records available (domain: " .. data.forward_domain .. ", source: " .. data.forward_domain_source .. ")\n"
+        else
             result = result .. "No forward DNS records available (no PTR record found)\n"
         end
+        end
+
+    -- IP Registration (RDAP) - available even without PTR
+    result = result .. "\n--- IP Registration (RDAP) ---\n"
+    if data.ip_registration_info then
+        local ipr = data.ip_registration_info
+        if ipr._detected_rir then
+            result = result .. "Registry: " .. ipr._detected_rir .. "\n"
+        end
+        if ipr.startAddress and ipr.endAddress then
+            result = result .. "Range: " .. ipr.startAddress .. " - " .. ipr.endAddress .. "\n"
+        end
+        if ipr.cidr0_cidrs and ipr.cidr0_cidrs[1] then
+            local cidr = ipr.cidr0_cidrs[1].v4prefix or ipr.cidr0_cidrs[1].v6prefix
+            if cidr then result = result .. "CIDR: " .. cidr .. "\n" end
+        elseif ipr.cidr then
+            result = result .. "CIDR: " .. ipr.cidr .. "\n"
+        end
+        if ipr.country then
+            result = result .. "Country: " .. ipr.country .. "\n"
+        end
+        if ipr.name then
+            result = result .. "Network Name: " .. ipr.name .. "\n"
+        end
+        if ipr.handle then
+            result = result .. "Handle: " .. ipr.handle .. "\n"
+        end
+        if ipr.type then
+            result = result .. "Type: " .. ipr.type .. "\n"
+        elseif ipr.netType then
+            result = result .. "Net Type: " .. ipr.netType .. "\n"
+        end
+    else
+        result = result .. "IP registration info not available\n"
+    end
     end
     
     -- Registration Information (RDAP)
@@ -5758,7 +7872,9 @@ local function format_dns_analytics_result(data, ip)
         end
     else
         result = result .. "\n--- Domain Registration Information ---\n"
-        if data.reverse_dns and data.reverse_dns.primary_domain then
+        if data.forward_domain and data.forward_domain_source then
+            result = result .. "Registration info not available (domain: " .. data.forward_domain .. ", source: " .. data.forward_domain_source .. ")\n"
+        elseif data.reverse_dns and data.reverse_dns.primary_domain then
             result = result .. "Registration info not available for: " .. data.reverse_dns.primary_domain .. "\n"
         else
             result = result .. "Registration info not available (no domain found)\n"
@@ -6914,8 +9030,8 @@ local function nmap_service_scan(ip)
     return output, nil
 end
 
--- Execute OS fingerprinting scan
-local function nmap_os_scan(ip)
+-- Execute Vulners vulnerability scan
+local function nmap_vulners_scan(ip)
     local nmap_available, nmap_path = check_nmap_available()
     if not nmap_available then
         local platform = "unknown"
@@ -6927,8 +9043,10 @@ local function nmap_os_scan(ip)
                                   "1. Download Nmap from: https://nmap.org/download.html\n" ..
                                   "   OR install via Chocolatey: choco install nmap\n" ..
                                   "2. Add Nmap to your system PATH\n" ..
-                                  "3. Restart Wireshark\n\n" ..
-                                  "Note: OS fingerprinting requires administrator privileges on Windows."
+                                  "3. Install Vulners script:\n" ..
+                                  "   Download from: https://github.com/vulnersCom/nmap-vulners\n" ..
+                                  "   Place vulners.nse in: C:\\Program Files (x86)\\Nmap\\scripts\\\n" ..
+                                  "4. Restart Wireshark"
         else
             local uname_handle = io.popen("uname -s 2>&1")
             if uname_handle then
@@ -6940,7 +9058,10 @@ local function nmap_os_scan(ip)
                                           "brew install nmap\n" ..
                                           "OR\n" ..
                                           "sudo port install nmap\n\n" ..
-                                          "Note: OS fingerprinting requires root privileges (use sudo)."
+                                          "Install Vulners script:\n" ..
+                                          "wget -O /opt/homebrew/share/nmap/scripts/vulners.nse https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse\n" ..
+                                          "OR\n" ..
+                                          "sudo wget -O /usr/local/share/nmap/scripts/vulners.nse https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse"
                 else
                     platform = "Linux"
                     install_instructions = "\n\nInstallation Instructions for Linux:\n" ..
@@ -6948,7 +9069,9 @@ local function nmap_os_scan(ip)
                                           "RedHat/CentOS: sudo yum install nmap\n" ..
                                           "Fedora: sudo dnf install nmap\n" ..
                                           "Arch: sudo pacman -S nmap\n\n" ..
-                                          "Note: OS fingerprinting requires root privileges (use sudo)."
+                                          "Install Vulners script:\n" ..
+                                          "sudo wget -O /usr/share/nmap/scripts/vulners.nse https://raw.githubusercontent.com/vulnersCom/nmap-vulners/master/vulners.nse\n" ..
+                                          "sudo nmap --script-updatedb"
                 end
             end
         end
@@ -6958,27 +9081,15 @@ local function nmap_os_scan(ip)
                    install_instructions
     end
     
-    -- Check if running with root privileges (OS fingerprinting requires root)
-    local has_root = is_running_as_root()
-    
-    if not has_root then
-        return nil, "OS fingerprinting requires root/administrator privileges.\n\n" ..
-                   "Wireshark is not running with root privileges.\n\n" ..
-                   "Options:\n" ..
-                   "• Run Wireshark from terminal with: sudo wireshark\n" ..
-                   "• Run Wireshark as Administrator (Windows)\n" ..
-                   "• Run nmap manually with: sudo nmap -O -Pn " .. ip .. "\n\n" ..
-                   "Note: OS fingerprinting cannot be performed without root privileges."
-    end
-    
-    -- Build OS fingerprinting command
-    -- -O: OS detection
+    -- Build Vulners scan command
+    -- --script vulners: Run vulners script
+    -- -sV: Version detection (required for vulners)
     -- -Pn: Skip host discovery
     -- Use full path if we have it, otherwise rely on PATH
     local nmap_cmd = (nmap_path and nmap_path ~= "nmap" and nmap_path) or "nmap"
-    local cmd = string.format("%s -O -Pn %s 2>&1", nmap_cmd, ip)
+    local cmd = string.format("%s --script vulners -sV -Pn %s 2>&1", nmap_cmd, ip)
     
-    log_message("Executing nmap OS fingerprinting to: " .. ip .. " (with root privileges)")
+    log_message("Executing nmap Vulners vulnerability scan to: " .. ip)
     
     local handle = io.popen(cmd)
     if not handle then
@@ -6992,13 +9103,19 @@ local function nmap_os_scan(ip)
         return nil, "No output from nmap command."
     end
     
-    -- Check for permission errors (shouldn't happen if we checked root, but verify)
-    if string.find(output, "requires root privileges") or 
-       string.find(output, "Operation not permitted") or
-       string.find(output, "QUITTING") then
-        return nil, "OS fingerprinting failed despite root privileges.\n\n" ..
-                   "This may indicate a system configuration issue.\n\n" ..
-                   "Raw error:\n" .. output
+    -- Check for script not found errors
+    if string.find(output, "vulners") and 
+       (string.find(output, "not found") or string.find(output, "SCRIPT ERROR") or string.find(output, "does not exist")) then
+        return nil, "Vulners script not found.\n\n" ..
+                   "Please install the Vulners NSE script:\n" ..
+                   "https://github.com/vulnersCom/nmap-vulners\n\n" ..
+                   "Raw error:\n" .. string.sub(output, 1, 500)
+    end
+    
+    -- Check for other errors
+    if string.find(output, "QUITTING") or string.find(output, "FATAL") then
+        return nil, "Vulners scan failed.\n\n" ..
+                   "Raw error:\n" .. string.sub(output, 1, 500)
     end
     
     return output, nil
@@ -7057,16 +9174,20 @@ local function format_service_scan_result(output, ip)
     return result
 end
 
--- Format OS fingerprinting results
-local function format_os_scan_result(output, ip)
-    local result = "=== Nmap OS Fingerprinting Results (⚠ Offensive Tool) ===\n\n"
-    result = result .. "⚠ WARNING: This is a network reconnaissance tool.\n"
+-- Format Vulners scan results
+local function format_vulners_scan_result(output, ip)
+    local result = "=== Nmap Vulners Vulnerability Scan Results (⚠ Offensive Tool) ===\n\n"
+    result = result .. "⚠ WARNING: This is a network vulnerability scanning tool.\n"
     result = result .. "Only use on systems you own or have explicit permission to scan.\n\n"
     result = result .. "Target: " .. ip .. "\n"
-    result = result .. "Command: nmap -O -Pn\n"
-    result = result .. "Scan Type: OS Detection\n\n"
+    result = result .. "Command: nmap --script vulners -sV -Pn\n"
+    result = result .. "Scan Type: Vulnerability Detection (Vulners.com database)\n\n"
     result = result .. "--- Output ---\n"
     result = result .. output
+    result = result .. "\n\n--- Additional Information ---\n"
+    result = result .. "Vulners uses the Vulners.com vulnerability database to identify\n"
+    result = result .. "known security vulnerabilities in detected services.\n"
+    result = result .. "For more details, visit: https://vulners.com\n"
     
     return result
 end
@@ -7127,32 +9248,39 @@ local function nmap_service_scan_callback(fieldname, ...)
     show_result_window("Nmap Service Scan: " .. ip, formatted)
 end
 
--- OS fingerprinting callback function
-local function nmap_os_scan_callback(fieldname, ...)
+-- Vulners scan callback function
+local function nmap_vulners_scan_callback(fieldname, ...)
     local fields = {...}
     local ip_raw = get_field_value(fieldname, "display", fields)
     
     if not ip_raw then
-        show_error_window("Nmap OS Fingerprinting", "Could not extract IP address from packet")
+        show_error_window("Nmap Vulners Scan", "Could not extract IP address from packet")
         return
     end
     
     -- Extract IP address from the field value
     local ip = extract_ip_from_string(ip_raw)
     if not ip then
-        show_error_window("Nmap OS Fingerprinting", "Could not extract valid IP address from: " .. ip_raw)
+        show_error_window("Nmap Vulners Scan", "Could not extract valid IP address from: " .. ip_raw)
         return
     end
     
-    -- Execute OS scan
-    local output, err = nmap_os_scan(ip)
+    -- Check if this is an RFC 1918 private address
+    if is_rfc1918_private(ip) then
+        local formatted = format_rfc1918_info(ip)
+        show_result_window("Private IP Address: " .. ip, formatted)
+        return
+    end
+    
+    -- Execute Vulners scan
+    local output, err = nmap_vulners_scan(ip)
     if err then
-        show_error_window("Nmap OS Fingerprinting Error", "Error executing nmap OS fingerprinting:\n" .. err)
+        show_error_window("Nmap Vulners Scan Error", "Error executing nmap Vulners scan:\n" .. err)
         return
     end
     
-    local formatted = format_os_scan_result(output, ip)
-    show_result_window("Nmap OS Fingerprinting: " .. ip, formatted)
+    local formatted = format_vulners_scan_result(output, ip)
+    show_result_window("Nmap Vulners Vulnerability Scan: " .. ip, formatted)
 end
 
 local function email_analysis_callback(...)
@@ -7215,12 +9343,19 @@ safe_register_menu("TLS/ASK/Certificate Analysis", tls_certificate_callback, "tl
 safe_register_menu("TLS/ASK/Certificate Analysis", tls_certificate_callback, "tls.handshake.certificate.subject")
 safe_register_menu("TLS/ASK/Certificate Analysis", tls_certificate_callback, "tls.handshake.certificate.issuer")
 
--- Certificate Validity Check (OpenSSL - Fast, No API needed)
--- Only available on packets that contain hostname information:
--- - TLS Client Hello with SNI (Server Name Indication)
--- - HTTP Host header
-safe_register_menu("TLS/ASK/Certificate Validity Check", cert_validity_callback, "tls.handshake.extensions_server_name")
-safe_register_menu("HTTP/ASK/Certificate Validity Check", cert_validity_callback, "http.host")
+-- Three Certificate Checking Options:
+-- 1. Quick Certificate Check (OpenSSL) - Fast and simple, no API
+-- 2. Certificate Validator (SSLChecker.com) - Quick API check with basic info
+-- 3. SSL Security Analysis (SSLLabs) - Comprehensive security grading (slow)
+
+-- Quick Certificate Check (OpenSSL - Instant, requires OpenSSL)
+safe_register_menu("TLS/ASK/Quick Certificate Check", quick_cert_check_callback, "tls.handshake.extensions_server_name")
+
+-- Certificate Validator (SSLChecker.com - Fast API, requires curl)
+safe_register_menu("TLS/ASK/Certificate Validator", cert_validator_callback, "tls.handshake.extensions_server_name")
+
+-- SSL Security Analysis (SSLLabs - Comprehensive, requires curl, slow)
+safe_register_menu("TLS/ASK/SSL Security Analysis (may take 1-2 min)", ssl_security_analysis_callback, "tls.handshake.extensions_server_name")
 
 
 -- Certificate Transparency
@@ -7271,6 +9406,32 @@ if CONFIG.GREYNOISE_ENABLED then
     safe_register_menu("IPv6 Dest/ASK/IP Intelligence (GreyNoise)", function(...) greynoise_ip_callback("ipv6.dst", ...) end, "ipv6.dst")
 end
 
+-- IP Intelligence (AlienVault OTX)
+if CONFIG.OTX_ENABLED then
+    safe_register_menu("IP Src/ASK/IP Intelligence (OTX)", function(...) otx_ip_callback("ip.src", ...) end, "ip.src")
+    safe_register_menu("IP Dest/ASK/IP Intelligence (OTX)", function(...) otx_ip_callback("ip.dst", ...) end, "ip.dst")
+    safe_register_menu("IPv6 Src/ASK/IP Intelligence (OTX)", function(...) otx_ip_callback("ipv6.src", ...) end, "ipv6.src")
+    safe_register_menu("IPv6 Dest/ASK/IP Intelligence (OTX)", function(...) otx_ip_callback("ipv6.dst", ...) end, "ipv6.dst")
+end
+
+-- Host Intelligence (URLhaus)
+if CONFIG.ABUSECH_ENABLED then
+    safe_register_menu("IP Src/ASK/Host Intelligence (URLhaus)", function(...) urlhaus_host_callback("ip.src", ...) end, "ip.src")
+    safe_register_menu("IP Dest/ASK/Host Intelligence (URLhaus)", function(...) urlhaus_host_callback("ip.dst", ...) end, "ip.dst")
+    safe_register_menu("IPv6 Src/ASK/Host Intelligence (URLhaus)", function(...) urlhaus_host_callback("ipv6.src", ...) end, "ipv6.src")
+    safe_register_menu("IPv6 Dest/ASK/Host Intelligence (URLhaus)", function(...) urlhaus_host_callback("ipv6.dst", ...) end, "ipv6.dst")
+end
+
+-- IOC Intelligence (ThreatFox)
+if CONFIG.ABUSECH_ENABLED then
+    safe_register_menu("IP Src/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("ip.src", ...) end, "ip.src")
+    safe_register_menu("IP Dest/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("ip.dst", ...) end, "ip.dst")
+    safe_register_menu("IPv6 Src/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("ipv6.src", ...) end, "ipv6.src")
+    safe_register_menu("IPv6 Dest/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("ipv6.dst", ...) end, "ipv6.dst")
+    safe_register_menu("DNS/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("dns.qry.name", ...) end, "dns.qry.name")
+    safe_register_menu("HTTP/ASK/IOC Intelligence (ThreatFox)", function(...) threatfox_ioc_callback("http.request.full_uri", ...) end, "http.request.full_uri")
+end
+
 -- DNS Analytics for IP addresses (Reverse DNS + Forward DNS + Registration)
 safe_register_menu("IP Src/ASK/DNS Analytics", function(...) dns_analytics_callback("ip.src", ...) end, "ip.src")
 safe_register_menu("IP Dest/ASK/DNS Analytics", function(...) dns_analytics_callback("ip.dst", ...) end, "ip.dst")
@@ -7311,13 +9472,23 @@ if CONFIG.VIRUSTOTAL_ENABLED then
     safe_register_menu("HTTP/ASK/URL Reputation (VirusTotal)", virustotal_url_callback, "http.request.full_uri")
 end
 
+-- URL Intelligence (AlienVault OTX)
+if CONFIG.OTX_ENABLED then
+    safe_register_menu("HTTP/ASK/URL Intelligence (OTX)", otx_url_callback, "http.request.full_uri")
+end
+
+-- URL Intelligence (URLhaus)
+if CONFIG.ABUSECH_ENABLED then
+    safe_register_menu("HTTP/ASK/URL Intelligence (URLhaus)", urlhaus_url_callback, "http.request.full_uri")
+end
+
 -- Email Analysis
 safe_register_menu("IMF/ASK/Email Analysis", email_analysis_callback, "imf.from")
 safe_register_menu("SMTP/ASK/Email Analysis", email_analysis_callback, "smtp.req.parameter")
     
     -- Log successful loading and menu registrations
-    log_message("Analyst's Shark Knife (ASK) plugin v0.2.1 loaded successfully")
-    log_message("Features enabled: RDAP, ARIN RDAP, AbuseIPDB, urlscan.io, VirusTotal, Shodan, IPinfo, GreyNoise, TLS Certificate Analysis, Certificate Validity Check, Certificate Transparency, Email Analysis, DNS Analytics, Ping, Traceroute, Nmap Scans")
+    log_message("Analyst's Shark Knife (ASK) plugin v0.2.5 loaded successfully")
+    log_message("Features enabled: RDAP, ARIN RDAP, AbuseIPDB, urlscan.io, VirusTotal, Shodan, IPinfo, GreyNoise, AlienVault OTX, Abuse.ch (URLhaus/ThreatFox), TLS Certificate Analysis, Certificate Validity Check, Certificate Transparency, Email Analysis, DNS Analytics, Ping, Traceroute, Nmap Scans (SYN, Service, Vulners)")
     
     -- Debug: Log menu registration counts
     local menu_count = 0
@@ -7330,6 +9501,9 @@ safe_register_menu("SMTP/ASK/Email Analysis", email_analysis_callback, "smtp.req
     if CONFIG.VIRUSTOTAL_ENABLED then menu_count = menu_count + 3 end
     if CONFIG.SHODAN_ENABLED then menu_count = menu_count + 2 end
     if CONFIG.IPINFO_ENABLED then menu_count = menu_count + 4 end
+    if CONFIG.GREYNOISE_ENABLED then menu_count = menu_count + 4 end
+    if CONFIG.OTX_ENABLED then menu_count = menu_count + 6 end  -- OTX: 4 IP (IPv4/IPv6 Src/Dest) + 1 Domain + 1 URL
+    if CONFIG.ABUSECH_ENABLED then menu_count = menu_count + 11 end  -- Abuse.ch: 1 URL (URLhaus) + 4 Host (URLhaus) + 6 IOC (ThreatFox: 4 IP + 1 DNS + 1 HTTP)
     if CONFIG.URLSCAN_ENABLED then menu_count = menu_count + 1 end
     menu_count = menu_count + 3 -- TLS Certificate Analysis (3 menu items)
     menu_count = menu_count + 2 -- Certificate Validity Check (2 menu items: TLS SNI + HTTP Host)
