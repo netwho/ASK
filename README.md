@@ -123,6 +123,9 @@ The installer will:
 | **DNS Registration Info (RDAP)** | ✅ | ❌ | ❌ | Unlimited |
 | **IP Registration Info (RDAP)** | ✅ | ❌ | ❌ | Unlimited |
 | **TLS Certificate Analysis** | ✅ | ❌ | ❌ | Unlimited |
+| **Quick Certificate Check** | ❌ | ❌ | ✅ openssl | Instant |
+| **Certificate Validator** | ⚠️ Limited | ❌ | ✅ curl (SSLChecker.com) | Fast, fallback to OpenSSL |
+| **SSL Security Analysis** | ⚠️ Limited | ❌ | ✅ curl (SSLLabs) | 60-120 sec first scan |
 | **Certificate Transparency** | ✅ | ❌ | ❌ | Unlimited |
 | **Email Analysis** (basic) | ✅ | ❌ | ❌ | Unlimited |
 | **IP Reputation (AbuseIPDB)** | ❌ | ✅ | ❌ | 1,000/day |
@@ -139,7 +142,6 @@ The installer will:
 | **IOC Intelligence (ThreatFox)** | ❌ | ✅ | ❌ | Fair use (free tier) |
 | **Domain Reputation (VirusTotal)** | ❌ | ✅ | ❌ | 4/min, 500/day |
 | **Domain Intelligence (AlienVault OTX)** | ❌ | ✅ | ❌ | Unlimited (free tier) |
-| **SSL/TLS Security Analysis** | ⚠️ Limited | ❌ | ✅ curl (SSLLabs API) | N/A |
 | **DNS Analytics** | ⚠️ Limited | ❌ | ✅ curl (Cloudflare DoH) OR dig/nslookup | N/A |
 | **Ping** | ❌ | ❌ | ✅ ping | N/A |
 | **Traceroute** | ❌ | ❌ | ✅ traceroute | N/A |
@@ -152,8 +154,14 @@ The installer will:
 - ❌ **Not Available** - Feature requires the listed requirement
 
 ### Notes on Tool Requirements
-- **SSL/TLS Security Analysis**: Primary method uses SSLLabs API via curl (no API key required). Falls back to OpenSSL if API unavailable.
-- **DNS Analytics**: Primary method uses Cloudflare DNS over HTTPS (DoH) via curl (no API key required). Falls back to dig/nslookup if DoH unavailable.
+
+**Certificate Checking (3 Options)**:
+1. **Quick Certificate Check**: Direct OpenSSL connection. Instant, basic certificate info (subject, issuer, validity). Requires OpenSSL installed.
+2. **Certificate Validator**: SSLChecker.com API via curl. Fast (seconds), more details than OpenSSL. Falls back to OpenSSL if API fails.
+3. **SSL Security Analysis**: SSLLabs API via curl. Comprehensive security grading (A-F), vulnerability detection, protocol analysis. First scan 60-120 seconds, cached results instant. Falls back to OpenSSL if at capacity.
+
+**Other Tools**:
+- **DNS Analytics**: Uses Cloudflare DNS over HTTPS (DoH) via curl (no API key required). Falls back to dig/nslookup if DoH unavailable.
 - **curl**: Usually pre-installed on macOS/Linux. Windows 10+ includes curl. Required for most API-based features.
 
 ## 🔑 API Key Registration & Free Tiers
@@ -208,19 +216,34 @@ The installer will:
   - Maliciousness scores
   - Resource analysis (domains, IPs, URLs contacted)
 
-### ssl-checker.io (SSL/TLS Security Analysis - No Registration Required)
+### Certificate Checking Services (No Registration Required)
+
+**SSLLabs (SSL Security Analysis)**
+- **Registration:** Not required - free service
+- **API Key:** Not required  
+- **Endpoint:** https://api.ssllabs.com/api/v3/analyze
+- **What you get:**
+  - Industry-standard security grading (A+ to F)
+  - Comprehensive vulnerability detection (Heartbleed, POODLE, FREAK, BEAST, Logjam, DROWN)
+  - Protocol and cipher suite analysis
+  - Forward secrecy detection
+  - HSTS status and configuration
+  - Complete certificate chain information
+- **Speed:** 60-120 seconds for first scan, instant for cached results
+- **Note:** Falls back to OpenSSL if at capacity
+
+**SSLChecker.com (Certificate Validator)**
 - **Registration:** Not required - free service
 - **API Key:** Not required
-- **Endpoint:** https://ssl-checker.io/api/v1/check/{domain}
+- **Endpoint:** https://www.sslchecker.com/certcheck
 - **What you get:**
-  - Certificate validity dates (notBefore, notAfter)
+  - Certificate validity dates
   - Issuer and subject information
   - Serial number and signature algorithm
   - Subject Alternative Names (SANs)
-  - SHA1 fingerprint
-  - HSTS status
   - Days until expiry
-- **Note:** This is the primary method for certificate checking. Falls back to OpenSSL if unavailable.
+- **Speed:** Fast (seconds)
+- **Note:** Falls back to OpenSSL if unavailable
 
 ### Cloudflare DNS over HTTPS (DNS Analytics - No Registration Required)
 - **Registration:** Not required - free service
