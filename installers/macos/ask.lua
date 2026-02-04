@@ -6389,6 +6389,47 @@ end
 local function check_certificate_openssl(hostname, port)
     port = port or 443
     
+    -- Check if OpenSSL is available FIRST (fast check before attempting connection)
+    local openssl_available = check_openssl_available()
+    if not openssl_available then
+        local is_windows = package.config:sub(1,1) == "\\"
+        local install_instructions
+        if is_windows then
+            install_instructions = "OpenSSL is not installed or not found in PATH.\n\n" ..
+                                  "Installation Instructions for Windows:\n" ..
+                                  "1. Download from: https://slproweb.com/products/Win32OpenSSL.html\n" ..
+                                  "   OR install via Chocolatey: choco install openssl\n" ..
+                                  "2. Add OpenSSL to your system PATH\n" ..
+                                  "3. Restart Wireshark"
+        else
+            local uname_handle = io.popen("uname -s 2>&1")
+            local platform = "Linux"
+            if uname_handle then
+                local uname_output = uname_handle:read("*a")
+                uname_handle:close()
+                if string.find(uname_output, "Darwin") then
+                    platform = "macOS"
+                end
+            end
+            
+            if platform == "macOS" then
+                install_instructions = "OpenSSL is not installed or not found in PATH.\n\n" ..
+                                      "Installation Instructions for macOS:\n" ..
+                                      "brew install openssl\n" ..
+                                      "OR\n" ..
+                                      "sudo port install openssl"
+            else
+                install_instructions = "OpenSSL is not installed or not found in PATH.\n\n" ..
+                                      "Installation Instructions for Linux:\n" ..
+                                      "Debian/Ubuntu: sudo apt-get install openssl\n" ..
+                                      "RedHat/CentOS: sudo yum install openssl\n" ..
+                                      "Fedora: sudo dnf install openssl\n" ..
+                                      "Arch: sudo pacman -S openssl"
+            end
+        end
+        return nil, install_instructions
+    end
+    
     -- Remove protocol prefix if present
     hostname = string.gsub(hostname, "^https?://", "")
     hostname = string.gsub(hostname, "^www%.", "")
@@ -6397,7 +6438,7 @@ local function check_certificate_openssl(hostname, port)
     local cmd
     local output
     
-    log_message("Using OpenSSL fallback for: " .. hostname .. ":" .. port)
+    log_message("Using OpenSSL for: " .. hostname .. ":" .. port)
     
     if is_windows then
         -- Windows: simple command

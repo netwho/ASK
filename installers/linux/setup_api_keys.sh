@@ -72,6 +72,8 @@ prompt_api_key "IPinfo" "IPINFO_API_KEY.txt" "https://ipinfo.io/signup" "optiona
 
 prompt_api_key "urlscan.io" "URLSCAN_API_KEY.txt" "https://urlscan.io/user/signup" "optional"
 
+prompt_api_key "Abuse.ch (ThreatFox/URLhaus)" "ABUSECH_API_KEY.txt" "https://auth.abuse.ch/" "optional"
+
 echo "========================================"
 echo "Setup complete! API keys are stored in $CONFIG_DIR"
 echo ""
@@ -100,6 +102,11 @@ if [ -f "$CONFIG_DIR/URLSCAN_API_KEY.txt" ]; then
     echo "  ✓ urlscan.io"
 else
     echo "  ✗ urlscan.io (optional)"
+fi
+if [ -f "$CONFIG_DIR/ABUSECH_API_KEY.txt" ]; then
+    echo "  ✓ Abuse.ch"
+else
+    echo "  ✗ Abuse.ch (optional)"
 fi
 echo ""
 echo "Restart Wireshark for changes to take effect."

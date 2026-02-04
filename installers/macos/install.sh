@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ASK (Analyst's Shark Knife) Installation Script for macOS
-# Version: 0.2.4
+# Version: 0.2.5
 
 set -e
 
 echo "=========================================="
 echo "ASK (Analyst's Shark Knife) Installer"
-echo "Version 0.2.4 - macOS"
+echo "Version 0.2.5 - macOS"
 echo "=========================================="
 echo ""
 
