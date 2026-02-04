@@ -516,11 +516,11 @@ if ($hasDownloadTool) {
 Write-Host ""
 $runSetup = Read-Host "Run API key setup script? (y/n)"
 if ($runSetup -eq "y" -or $runSetup -eq "Y") {
-    $setupScript = Join-Path $SCRIPT_DIR "setup_api_keys.ps1"
+    $setupScript = Join-Path $SCRIPT_DIR "setup_api_keys.bat"
     if (Test-Path $setupScript) {
-        & $setupScript
+        Start-Process -FilePath "cmd.exe" -ArgumentList "/c", "`"$setupScript`"" -Wait -NoNewWindow
     } else {
-        Write-Host "[!] setup_api_keys.ps1 not found in installer directory" -ForegroundColor Yellow
+        Write-Host "[!] setup_api_keys.bat not found in installer directory" -ForegroundColor Yellow
     }
 }
 
