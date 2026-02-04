@@ -1,4 +1,4 @@
-# Testing Instructions for Scan Detector v0.1.0
+# Testing Instructions for Scan Detector v0.1.1
 
 ## The Problem
 The plugin was creating duplicate scan entries:
@@ -6,7 +6,7 @@ The plugin was creating duplicate scan entries:
 - One with IP "172.28.184.67" (from packet header)
 
 ## The Fix
-Version 0.1.0 now:
+Version 0.1.1 now:
 - Extracts IPs directly from packet headers (`ip.src`, `ip.dst`)
 - Uses only IP addresses for tracking (no more duplicates)
 - Builds DNS cache by comparing header IPs with display names
@@ -37,7 +37,7 @@ wireshark your_capture.pcap
 Check the Wireshark console output for:
 ```
 ========================================
-Scan Detector Plugin v0.1.0 Loaded
+Scan Detector Plugin v0.1.1 Loaded
 ========================================
 ```
 
@@ -128,7 +128,7 @@ lua -l scan_detector.lua
 ```
 
 ## Verification Checklist
-- [ ] Plugin shows v0.1.0 on load
+- [ ] Plugin shows v0.1.1 on load
 - [ ] Used "Reset Data" to clear old scan reports
 - [ ] Reloaded the capture file or forced re-dissection
 - [ ] Generated new report

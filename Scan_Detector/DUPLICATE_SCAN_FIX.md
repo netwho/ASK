@@ -1,4 +1,4 @@
-# Duplicate Scan Entry Bug Fix - v0.1.0
+# Duplicate Scan Entry Bug Fix - v0.1.1
 
 ## The Problem
 

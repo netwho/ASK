@@ -2,6 +2,20 @@
 
 All notable changes to ASK (Analyst's Shark Knife) will be documented in this file.
 
+## [0.2.6] - 2026-02-04
+
+### Maintenance Release
+
+#### Changed
+- **Version** - Updated ASK plugin version to 0.2.6 in main and installer Lua files
+- **User-Agent** - Updated all ASK User-Agent strings to `ASK-Wireshark-Plugin/0.2.6`
+- **Installer Banners** - Updated installer version banners for macOS, Linux, and Windows to 0.2.6
+- **Documentation** - Updated README version badge and version callouts to 0.2.6
+
+#### Scan Detector
+- **Version** - Updated Scan Detector plugin version to 0.1.1
+- **Documentation** - Updated Scan Detector docs to reference v0.1.1
+
 ## [0.2.5] - 2026-02-03
 
 ### API Integration Enhancements

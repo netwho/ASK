@@ -1,4 +1,4 @@
-# NMAP Detection Enhancements - v0.1.0
+# NMAP Detection Enhancements - v0.1.1
 
 ## Overview
 The Scan Detector plugin has been enhanced to specifically identify NMAP scans and NMAP NSE (Nmap Scripting Engine) vulnerability scans.

@@ -1,10 +1,10 @@
 -- Wireshark Scan Detection Plugin
 -- Detects Nmap scans, vulnerability scanners (OpenVAS, Nessus, etc.)
--- Version: 0.1.0
+-- Version: 0.1.1
 
 -- Register plugin info with Wireshark
 set_plugin_info({
-    version = "0.1.0",
+    version = "0.1.1",
     author = "Walter Hofstetter",
     description = "Detects network scans including Nmap, OpenVAS, Nessus and other vulnerability scanners",
     repository = "https://github.com/netwho/ScanDetector"
@@ -20,6 +20,14 @@ local f_scan_confidence = ProtoField.string("scandetector.confidence", "Detectio
 local f_scan_details = ProtoField.string("scandetector.details", "Scan Details")
 
 scan_detector.fields = {f_scan_type, f_scan_source, f_scan_confidence, f_scan_details}
+
+local DEBUG = false
+
+local function debug_log(message)
+    if DEBUG then
+        print(message)
+    end
+end
 
 -- Global data structures for tracking scan activity
 local scan_data = {
@@ -93,6 +101,13 @@ local nmap_patterns = {
     -- NMAP timing characteristics (packets per second)
     timing_threshold = 100  -- More than 100 packets/sec suggests fast scanning
 }
+do
+    local common_windows_set = {}
+    for _, window_size in ipairs(nmap_patterns.common_windows) do
+        common_windows_set[window_size] = true
+    end
+    nmap_patterns.common_windows_set = common_windows_set
+end
 
 -- Helper function to check if string is an IP address
 local function is_ip_address(str)
@@ -149,13 +164,13 @@ end
 -- Helper function to check if IP is in our tracking
 local function init_ip_tracking(ip)
     if not scan_data.tcp_syn[ip] then
-        scan_data.tcp_syn[ip] = {}
+        scan_data.tcp_syn[ip] = {targets = {}, count = 0}
     end
     if not scan_data.tcp_connections[ip] then
         scan_data.tcp_connections[ip] = {}
     end
     if not scan_data.port_scans[ip] then
-        scan_data.port_scans[ip] = {ports = {}, count = 0, first_seen = 0, destinations = {}}  -- Track destinations for ACK scans
+        scan_data.port_scans[ip] = {ports = {}, count = 0, first_seen = 0, destinations = {}, destination_count = 0}  -- Track destinations for ACK scans
     end
     if not scan_data.arp_scans[ip] then
         scan_data.arp_scans[ip] = {targets = {}, count = 0}
@@ -169,14 +184,31 @@ local function init_ip_tracking(ip)
     if not scan_data.nmap_indicators[ip] then
         scan_data.nmap_indicators[ip] = {
             window_sizes = {},      -- Track TCP window sizes seen
-            packet_times = {},      -- Track packet timestamps for timing analysis
+            packet_count = 0,       -- Total packets seen from this source
+            window_variety_count = 0,
             nmap_likelihood = 0     -- Score 0-100 for NMAP likelihood
         }
     end
 end
 
+local check_nmap_indicators
+
+local function track_nmap_indicators(src_ip, tcp_window)
+    local indicators = scan_data.nmap_indicators[src_ip]
+    if not indicators then
+        return
+    end
+
+    indicators.packet_count = indicators.packet_count + 1
+    if tcp_window and not indicators.window_sizes[tcp_window] then
+        indicators.window_sizes[tcp_window] = true
+        indicators.window_variety_count = indicators.window_variety_count + 1
+    end
+    check_nmap_indicators(src_ip, tcp_window)
+end
+
 -- Helper function to check for NMAP indicators
-local function check_nmap_indicators(src_ip, tcp_window)
+check_nmap_indicators = function(src_ip, tcp_window)
     if not scan_data.nmap_indicators[src_ip] then
         return false
     end
@@ -185,21 +217,12 @@ local function check_nmap_indicators(src_ip, tcp_window)
     local nmap_score = 0
 
     -- Check if TCP window size matches common NMAP values
-    if tcp_window then
-        indicators.window_sizes[tcp_window] = true
-        for _, common_win in ipairs(nmap_patterns.common_windows) do
-            if tcp_window == common_win then
-                nmap_score = nmap_score + 30
-                break
-            end
-        end
+    if tcp_window and nmap_patterns.common_windows_set[tcp_window] then
+        nmap_score = nmap_score + 30
     end
 
     -- Check packet timing (rapid sequential scans are typical of NMAP)
-    local packet_count = 0
-    for _ in pairs(indicators.packet_times) do
-        packet_count = packet_count + 1
-    end
+    local packet_count = indicators.packet_count
 
     if packet_count > 50 then
         nmap_score = nmap_score + 40
@@ -208,10 +231,7 @@ local function check_nmap_indicators(src_ip, tcp_window)
     end
 
     -- Check for variety of window sizes (NMAP often varies these)
-    local window_variety = 0
-    for _ in pairs(indicators.window_sizes) do
-        window_variety = window_variety + 1
-    end
+    local window_variety = indicators.window_variety_count
 
     if window_variety >= 3 then
         nmap_score = nmap_score + 30
@@ -253,19 +273,14 @@ local function detect_syn_scan(pinfo, tcp_flags_val, src_ip, dst_ip, dst_port, t
         init_ip_tracking(src_ip)
 
         -- Track NMAP indicators
-        if tcp_window and scan_data.nmap_indicators[src_ip] then
-            table.insert(scan_data.nmap_indicators[src_ip].packet_times, timestamp)
-            check_nmap_indicators(src_ip, tcp_window)
-        end
+        track_nmap_indicators(src_ip, tcp_window)
 
         local key = dst_ip .. ":" .. dst_port
-        scan_data.tcp_syn[src_ip][key] = (scan_data.tcp_syn[src_ip][key] or 0) + 1
-
-        -- Count unique destination combinations
-        local unique_dests = 0
-        for _ in pairs(scan_data.tcp_syn[src_ip]) do
-            unique_dests = unique_dests + 1
+        if not scan_data.tcp_syn[src_ip].targets[key] then
+            scan_data.tcp_syn[src_ip].targets[key] = true
+            scan_data.tcp_syn[src_ip].count = scan_data.tcp_syn[src_ip].count + 1
         end
+        local unique_dests = scan_data.tcp_syn[src_ip].count
 
         if unique_dests >= config.syn_threshold then
             return true, "SYN Scan", "HIGH", string.format("Detected %d SYN packets to different targets", unique_dests)
@@ -281,10 +296,7 @@ local function detect_fin_scan(pinfo, tcp_flags_val, src_ip, dst_ip, dst_port, t
         init_ip_tracking(src_ip)
 
         -- Track NMAP indicators
-        if tcp_window and scan_data.nmap_indicators[src_ip] then
-            table.insert(scan_data.nmap_indicators[src_ip].packet_times, timestamp)
-            check_nmap_indicators(src_ip, tcp_window)
-        end
+        track_nmap_indicators(src_ip, tcp_window)
 
         local key = dst_ip .. ":" .. dst_port
         if not scan_data.port_scans[src_ip].ports[key] then
@@ -307,10 +319,7 @@ local function detect_xmas_scan(pinfo, tcp_flags_val, src_ip, dst_ip, dst_port, 
         init_ip_tracking(src_ip)
 
         -- Track NMAP indicators
-        if tcp_window and scan_data.nmap_indicators[src_ip] then
-            table.insert(scan_data.nmap_indicators[src_ip].packet_times, timestamp)
-            check_nmap_indicators(src_ip, tcp_window)
-        end
+        track_nmap_indicators(src_ip, tcp_window)
 
         local key = dst_ip .. ":" .. dst_port
         if not scan_data.port_scans[src_ip].ports[key] then
@@ -332,10 +341,7 @@ local function detect_null_scan(pinfo, tcp_flags_val, src_ip, dst_ip, dst_port, 
         init_ip_tracking(src_ip)
 
         -- Track NMAP indicators
-        if tcp_window and scan_data.nmap_indicators[src_ip] then
-            table.insert(scan_data.nmap_indicators[src_ip].packet_times, timestamp)
-            check_nmap_indicators(src_ip, tcp_window)
-        end
+        track_nmap_indicators(src_ip, tcp_window)
 
         local key = dst_ip .. ":" .. dst_port
         if not scan_data.port_scans[src_ip].ports[key] then
@@ -357,10 +363,7 @@ local function detect_ack_scan(pinfo, tcp_flags_val, src_ip, dst_ip, dst_port, t
         init_ip_tracking(src_ip)
 
         -- Track NMAP indicators
-        if tcp_window and scan_data.nmap_indicators[src_ip] then
-            table.insert(scan_data.nmap_indicators[src_ip].packet_times, timestamp)
-            check_nmap_indicators(src_ip, tcp_window)
-        end
+        track_nmap_indicators(src_ip, tcp_window)
 
         local conn_key = dst_ip .. ":" .. dst_port
         -- Check if this is part of an established connection
@@ -376,13 +379,9 @@ local function detect_ack_scan(pinfo, tcp_flags_val, src_ip, dst_ip, dst_port, t
             -- Track unique destinations for ACK scans (to reduce false positives)
             if not scan_data.port_scans[src_ip].destinations[dst_ip] then
                 scan_data.port_scans[src_ip].destinations[dst_ip] = true
+                scan_data.port_scans[src_ip].destination_count = scan_data.port_scans[src_ip].destination_count + 1
             end
-            
-            -- Count unique destinations
-            local unique_destinations = 0
-            for _ in pairs(scan_data.port_scans[src_ip].destinations) do
-                unique_destinations = unique_destinations + 1
-            end
+            local unique_destinations = scan_data.port_scans[src_ip].destination_count
             
             -- Only trigger if:
             -- 1. Threshold of ACK packets reached (higher threshold to reduce false positives)
@@ -517,9 +516,9 @@ function scan_detector.dissector(buffer, pinfo, tree)
     local dst_display = tostring(pinfo.dst)
 
     -- DEBUG: Print first time we see IP extraction difference
-    if src_display ~= src_ip and not is_ip_address(src_display) then
+        if src_display ~= src_ip and not is_ip_address(src_display) then
         if not scan_data.dns_cache[src_ip] then
-            print(string.format("DEBUG: Extracted IP %s from display name %s", src_ip, src_display))
+            debug_log(string.format("DEBUG: Extracted IP %s from display name %s", src_ip, src_display))
         end
         cache_dns_resolution(src_ip, src_display)
     end
@@ -605,7 +604,7 @@ function scan_detector.dissector(buffer, pinfo, tree)
 
         if not scan_data.scan_reports[report_key] then
             -- DEBUG: Print when creating new scan report
-            print(string.format("DEBUG: Creating scan report with key='%s', src_ip='%s', base_type='%s', hostname='%s'",
+            debug_log(string.format("DEBUG: Creating scan report with key='%s', src_ip='%s', base_type='%s', hostname='%s'",
                 report_key, src_ip, base_type, tostring(get_hostname(src_ip))))
 
             scan_data.scan_reports[report_key] = {
@@ -815,7 +814,7 @@ register_menu("Scan Detector/Show DNS Cache", show_dns_cache, MENU_TOOLS_UNSORTE
 --        scandetector.type == "SYN Scan"
 
 print("========================================")
-print("Scan Detector Plugin v0.1.0 Loaded")
+print("Scan Detector Plugin v0.1.1 Loaded")
 print("========================================")
 print("Available menu options:")
 print("  - Tools > Scan Detector > Generate Report")

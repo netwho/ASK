@@ -12,7 +12,7 @@
     - TLS/SSL Certificate Analysis (Direct certificate inspection + Certificate Transparency)
     - Email Analysis (SMTP/IMF)
     
-    Version: 0.2.5
+    Version: 0.2.6
     Author: Walter Hofstetter
     License: GPL-2.0
 --]]
@@ -21,10 +21,8 @@
 -- Register plugin info with Wireshark
 -------------------------------------------------
 
-local ASK_BUILD = "2026-02-03 ssllabs-integration"
-
 set_plugin_info({
-    version = "0.2.5",
+    version = "0.2.6",
     author = "Walter Hofstetter",
     description = "Analyst's Shark Knife (ASK) - Comprehensive suite for security analytics and IOC research. Provides DNS registration info (RDAP), IP reputation (AbuseIPDB, VirusTotal), URL categorization (urlscan.io, VirusTotal, AlienVault OTX, URLhaus), IP intelligence (Shodan, IPinfo, GreyNoise, AlienVault OTX, ThreatFox), TLS certificate analysis, certificate transparency analysis, DNS analytics, and email analysis.",
     repository = "https://github.com/netwho/ask"
@@ -4105,7 +4103,7 @@ local function lookup_shodan_ip(ip)
     
     local response, err = http_get(url, {
         ["Accept"] = "application/json",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }, { allow_error_json = true })
     if err then
         return nil, "Shodan API Error: " .. err
@@ -4249,7 +4247,6 @@ local function format_shodan_result(data)
     if not data then return "No data available" end
     
     local result = "=== IP Intelligence (Shodan) ===\n\n"
-    result = result .. "ASK Build: " .. ASK_BUILD .. "\n\n"
     
     if data.ip_str then
         result = result .. "IP Address: " .. data.ip_str .. "\n"
@@ -4680,7 +4677,7 @@ local function lookup_greynoise_ip(ip)
     -- GreyNoise Community API doesn't require authentication
     local headers = {
         ["Accept"] = "application/json",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     local response, err = http_get(url, headers)
@@ -4964,7 +4961,7 @@ local function lookup_otx_ip(ip)
     local headers = {
         ["Accept"] = "application/json",
         ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     local response, err = http_get(url, headers)
@@ -5020,7 +5017,7 @@ local function lookup_otx_domain(domain)
     local headers = {
         ["Accept"] = "application/json",
         ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     local response, err = http_get(url, headers)
@@ -5078,7 +5075,7 @@ local function lookup_otx_url(url)
     local headers = {
         ["Accept"] = "application/json",
         ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     local response, err = http_get(api_url, headers)
@@ -5491,7 +5488,7 @@ local function lookup_urlhaus_url(url)
         ["Accept"] = "application/json",
         ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
         ["Content-Type"] = "application/x-www-form-urlencoded",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     -- URLhaus requires POST with url parameter
@@ -5555,7 +5552,7 @@ local function lookup_urlhaus_host(host)
         ["Accept"] = "application/json",
         ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
         ["Content-Type"] = "application/x-www-form-urlencoded",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     -- URLhaus requires POST with host parameter
@@ -5619,7 +5616,7 @@ local function lookup_threatfox_ioc(ioc)
         ["Accept"] = "application/json",
         ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
         ["Content-Type"] = "application/json",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     -- ThreatFox requires JSON POST body
@@ -7774,8 +7771,7 @@ local function format_dns_analytics_result(data, ip)
     end
     
     local result = "=== DNS Analytics ===\n\n"
-    result = result .. "IP Address: " .. (data.ip or ip) .. "\n"
-    result = result .. "ASK Build: " .. ASK_BUILD .. "\n\n"
+    result = result .. "IP Address: " .. (data.ip or ip) .. "\n\n"
     
     -- Reverse DNS (PTR Records)
     result = result .. "--- Reverse DNS (PTR Records) ---\n"
@@ -9679,7 +9675,7 @@ safe_register_menu("IMF/ASK/Email Analysis", email_analysis_callback, "imf.from"
 safe_register_menu("SMTP/ASK/Email Analysis", email_analysis_callback, "smtp.req.parameter")
     
     -- Log successful loading and menu registrations
-    log_message("Analyst's Shark Knife (ASK) plugin v0.2.5 loaded successfully")
+    log_message("Analyst's Shark Knife (ASK) plugin v0.2.6 loaded successfully")
     log_message("Features enabled: RDAP, ARIN RDAP, AbuseIPDB, urlscan.io, VirusTotal, Shodan, IPinfo, GreyNoise, AlienVault OTX, Abuse.ch (URLhaus/ThreatFox), TLS Certificate Analysis, Certificate Validity Check, Certificate Transparency, Email Analysis, DNS Analytics, Ping, Traceroute, Nmap Scans (SYN, Service, Vulners)")
     
     -- Debug: Log menu registration counts

@@ -12,7 +12,7 @@
     - TLS/SSL Certificate Analysis (Direct certificate inspection + Certificate Transparency)
     - Email Analysis (SMTP/IMF)
     
-    Version: 0.2.5
+    Version: 0.2.6
     Author: Walter Hofstetter
     License: GPL-2.0
 --]]
@@ -21,10 +21,8 @@
 -- Register plugin info with Wireshark
 -------------------------------------------------
 
-local ASK_BUILD = "2026-02-03 ssllabs-integration"
-
 set_plugin_info({
-    version = "0.2.5",
+    version = "0.2.6",
     author = "Walter Hofstetter",
     description = "Analyst's Shark Knife (ASK) - Comprehensive suite for security analytics and IOC research. Provides DNS registration info (RDAP), IP reputation (AbuseIPDB, VirusTotal), URL categorization (urlscan.io, VirusTotal, AlienVault OTX, URLhaus), IP intelligence (Shodan, IPinfo, GreyNoise, AlienVault OTX, ThreatFox), TLS certificate analysis, certificate transparency analysis, DNS analytics, and email analysis.",
     repository = "https://github.com/netwho/ask"
@@ -36,6 +34,15 @@ set_plugin_info({
 
 local function log_message(message)
     print("[ASK] " .. message)
+end
+
+local function trim_and_strip_control(text)
+    if not text then
+        return ""
+    end
+    local trimmed = string.gsub(text, "^%s+", "")
+    trimmed = string.gsub(trimmed, "%s+$", "")
+    return string.gsub(trimmed, "%c+", "")
 end
 
 -- Read API key from file in home directory
@@ -89,40 +96,21 @@ local function read_api_key_from_file(service_name)
     -- Try to read the file
     local file = io.open(key_file, "r")
     if file then
-        -- Read entire file content
-        local content = file:read("*all")
+        local key = nil
+        for line in file:lines() do
+            local trimmed = trim_and_strip_control(line)
+            if trimmed ~= "" then
+                key = trimmed
+                break
+            end
+        end
         file:close()
-        
-        if content and content ~= "" then
-            -- Split by newlines and take first non-empty line
-            local lines = {}
-            for line in string.gmatch(content, "[^\r\n]+") do
-                table.insert(lines, line)
-            end
-            
-            -- Find first non-empty line
-            local key = nil
-            for _, line in ipairs(lines) do
-                -- Trim whitespace from both ends (including newlines, spaces, tabs)
-                local trimmed = string.gsub(line, "^%s+", "")
-                trimmed = string.gsub(trimmed, "%s+$", "")
-                -- Remove any remaining control characters
-                trimmed = string.gsub(trimmed, "%c+", "")
-                
-                if trimmed ~= "" then
-                    key = trimmed
-                    break
-                end
-            end
-            
-            if key and key ~= "" then
-                log_message("Successfully loaded API key for " .. service_name .. " from file (length: " .. string.len(key) .. " chars)")
-                return key
-            else
-                log_message("API key file for " .. service_name .. " exists but contains no valid data")
-            end
+
+        if key and key ~= "" then
+            log_message("Successfully loaded API key for " .. service_name .. " from file (length: " .. string.len(key) .. " chars)")
+            return key
         else
-            log_message("API key file for " .. service_name .. " exists but is empty")
+            log_message("API key file for " .. service_name .. " exists but contains no valid data")
         end
     else
         log_message("API key file not found: " .. key_file)
@@ -615,6 +603,36 @@ local function append_to_log(query_type, query_target, result_content)
 end
 
 -- Copy text to clipboard (platform-dependent)
+local clipboard_backend = nil
+
+local function command_exists(command)
+    local check_cmd
+    if package.config:sub(1,1) == "\\" then
+        check_cmd = "where " .. command .. " >nul 2>&1"
+    else
+        check_cmd = "which " .. command .. " >/dev/null 2>&1"
+    end
+    local status = os.execute(check_cmd)
+    return status == 0 or status == true
+end
+
+local function get_clipboard_backend()
+    if clipboard_backend ~= nil then
+        return clipboard_backend
+    end
+
+    if command_exists("pbcopy") then
+        clipboard_backend = "pbcopy"
+    elseif command_exists("xclip") then
+        clipboard_backend = "xclip"
+    elseif command_exists("xsel") then
+        clipboard_backend = "xsel"
+    else
+        clipboard_backend = false
+    end
+    return clipboard_backend
+end
+
 local function copy_to_clipboard(text)
     if not text or text == "" then
         return false, "No text to copy"
@@ -637,17 +655,16 @@ local function copy_to_clipboard(text)
             success = true  -- clip doesn't output anything, assume success if no error
         end
     else
-        -- macOS: Use pbcopy
-        if os.execute("which pbcopy >/dev/null 2>&1") == 0 or os.execute("which pbcopy >/dev/null 2>&1") == true then
+        local backend = get_clipboard_backend()
+        if backend == "pbcopy" then
             cmd = 'echo ' .. string.format('%q', text) .. ' | pbcopy'
             local result = os.execute(cmd)
             success = (result == 0 or result == true)
-        -- Linux: Try xclip or xsel
-        elseif os.execute("which xclip >/dev/null 2>&1") == 0 or os.execute("which xclip >/dev/null 2>&1") == true then
+        elseif backend == "xclip" then
             cmd = 'echo ' .. string.format('%q', text) .. ' | xclip -selection clipboard'
             local result = os.execute(cmd)
             success = (result == 0 or result == true)
-        elseif os.execute("which xsel >/dev/null 2>&1") == 0 or os.execute("which xsel >/dev/null 2>&1") == true then
+        elseif backend == "xsel" then
             cmd = 'echo ' .. string.format('%q', text) .. ' | xsel --clipboard'
             local result = os.execute(cmd)
             success = (result == 0 or result == true)
@@ -1207,10 +1224,12 @@ end
 
 -- Check for JSON library availability at startup
 local json_library_available = false
+local json_decoder = nil
 do
     local json_available, json = pcall(require, "json")
     if json_available and json and json.decode then
         json_library_available = true
+        json_decoder = json.decode
         log_message("JSON library (json.lua) detected and available - will use for all JSON parsing")
     else
         log_message("JSON library not found - using simple parser (install json.lua for better parsing)")
@@ -1225,16 +1244,13 @@ local function parse_json(json_str)
     end
     
     -- Try to use Lua's JSON library if available, otherwise use simple parsing
-    if json_library_available then
-        local json = require("json")
-        local success, result, err = pcall(function()
-            return json.decode(json_str)
-        end)
+    if json_library_available and json_decoder then
+        local success, result = pcall(json_decoder, json_str)
         if success and result then
             return result
-        elseif not success and err then
+        elseif not success then
             -- JSON library failed to parse - log the error for debugging
-            log_message("JSON library parse error: " .. tostring(err))
+            log_message("JSON library parse error while decoding payload")
             -- Fall through to simple parser
         end
     end
@@ -4105,7 +4121,7 @@ local function lookup_shodan_ip(ip)
     
     local response, err = http_get(url, {
         ["Accept"] = "application/json",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }, { allow_error_json = true })
     if err then
         return nil, "Shodan API Error: " .. err
@@ -4249,7 +4265,6 @@ local function format_shodan_result(data)
     if not data then return "No data available" end
     
     local result = "=== IP Intelligence (Shodan) ===\n\n"
-    result = result .. "ASK Build: " .. ASK_BUILD .. "\n\n"
     
     if data.ip_str then
         result = result .. "IP Address: " .. data.ip_str .. "\n"
@@ -4680,7 +4695,7 @@ local function lookup_greynoise_ip(ip)
     -- GreyNoise Community API doesn't require authentication
     local headers = {
         ["Accept"] = "application/json",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     local response, err = http_get(url, headers)
@@ -4964,7 +4979,7 @@ local function lookup_otx_ip(ip)
     local headers = {
         ["Accept"] = "application/json",
         ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     local response, err = http_get(url, headers)
@@ -5020,7 +5035,7 @@ local function lookup_otx_domain(domain)
     local headers = {
         ["Accept"] = "application/json",
         ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     local response, err = http_get(url, headers)
@@ -5078,7 +5093,7 @@ local function lookup_otx_url(url)
     local headers = {
         ["Accept"] = "application/json",
         ["X-OTX-API-KEY"] = CONFIG.OTX_API_KEY,
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     local response, err = http_get(api_url, headers)
@@ -5491,7 +5506,7 @@ local function lookup_urlhaus_url(url)
         ["Accept"] = "application/json",
         ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
         ["Content-Type"] = "application/x-www-form-urlencoded",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     -- URLhaus requires POST with url parameter
@@ -5555,7 +5570,7 @@ local function lookup_urlhaus_host(host)
         ["Accept"] = "application/json",
         ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
         ["Content-Type"] = "application/x-www-form-urlencoded",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     -- URLhaus requires POST with host parameter
@@ -5619,7 +5634,7 @@ local function lookup_threatfox_ioc(ioc)
         ["Accept"] = "application/json",
         ["Auth-Key"] = CONFIG.ABUSECH_API_KEY,
         ["Content-Type"] = "application/json",
-        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.5"
+        ["User-Agent"] = "ASK-Wireshark-Plugin/0.2.6"
     }
     
     -- ThreatFox requires JSON POST body
@@ -7774,8 +7789,7 @@ local function format_dns_analytics_result(data, ip)
     end
     
     local result = "=== DNS Analytics ===\n\n"
-    result = result .. "IP Address: " .. (data.ip or ip) .. "\n"
-    result = result .. "ASK Build: " .. ASK_BUILD .. "\n\n"
+    result = result .. "IP Address: " .. (data.ip or ip) .. "\n\n"
     
     -- Reverse DNS (PTR Records)
     result = result .. "--- Reverse DNS (PTR Records) ---\n"
@@ -9679,7 +9693,7 @@ safe_register_menu("IMF/ASK/Email Analysis", email_analysis_callback, "imf.from"
 safe_register_menu("SMTP/ASK/Email Analysis", email_analysis_callback, "smtp.req.parameter")
     
     -- Log successful loading and menu registrations
-    log_message("Analyst's Shark Knife (ASK) plugin v0.2.5 loaded successfully")
+    log_message("Analyst's Shark Knife (ASK) plugin v0.2.6 loaded successfully")
     log_message("Features enabled: RDAP, ARIN RDAP, AbuseIPDB, urlscan.io, VirusTotal, Shodan, IPinfo, GreyNoise, AlienVault OTX, Abuse.ch (URLhaus/ThreatFox), TLS Certificate Analysis, Certificate Validity Check, Certificate Transparency, Email Analysis, DNS Analytics, Ping, Traceroute, Nmap Scans (SYN, Service, Vulners)")
     
     -- Debug: Log menu registration counts
