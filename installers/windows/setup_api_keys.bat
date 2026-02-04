@@ -22,7 +22,7 @@ REM AbuseIPDB
 echo ----------------------------------------
 echo [AbuseIPDB]
 if exist "%CONFIG_DIR%\ABUSEIPDB_API_KEY.txt" (
-    echo ✓ API key file already exists: ABUSEIPDB_API_KEY.txt
+    echo [OK] API key file already exists: ABUSEIPDB_API_KEY.txt
     set /p UPDATE_CHOICE="Update this key? (y/N): "
     if /i not "!UPDATE_CHOICE!"=="y" (
         echo Skipping AbuseIPDB...
@@ -34,9 +34,9 @@ echo Get your free API key at: https://www.abuseipdb.com/api
 set /p ABUSEIPDB_KEY="Enter AbuseIPDB API Key: "
 if not "!ABUSEIPDB_KEY!"=="" (
     echo !ABUSEIPDB_KEY! > "%CONFIG_DIR%\ABUSEIPDB_API_KEY.txt"
-    echo ✓ AbuseIPDB API key saved
+    echo [OK] AbuseIPDB API key saved
 ) else (
-    echo ⚠ Warning: AbuseIPDB API key is required but was not provided
+    echo [!!] Warning: AbuseIPDB API key is required but was not provided
 )
 echo.
 
@@ -45,7 +45,7 @@ REM VirusTotal
 echo ----------------------------------------
 echo [VirusTotal]
 if exist "%CONFIG_DIR%\VIRUSTOTAL_API_KEY.txt" (
-    echo ✓ API key file already exists: VIRUSTOTAL_API_KEY.txt
+    echo [OK] API key file already exists: VIRUSTOTAL_API_KEY.txt
     set /p UPDATE_CHOICE="Update this key? (y/N): "
     if /i not "!UPDATE_CHOICE!"=="y" (
         echo Skipping VirusTotal...
@@ -57,7 +57,7 @@ echo Optional - Get your free API key at: https://www.virustotal.com/gui/join-us
 set /p VIRUSTOTAL_KEY="Enter VirusTotal API Key (or press Enter to skip): "
 if not "!VIRUSTOTAL_KEY!"=="" (
     echo !VIRUSTOTAL_KEY! > "%CONFIG_DIR%\VIRUSTOTAL_API_KEY.txt"
-    echo ✓ VirusTotal API key saved
+    echo [OK] VirusTotal API key saved
 ) else (
     echo Skipped VirusTotal (optional)
 )
@@ -68,7 +68,7 @@ REM Shodan
 echo ----------------------------------------
 echo [Shodan]
 if exist "%CONFIG_DIR%\SHODAN_API_KEY.txt" (
-    echo ✓ API key file already exists: SHODAN_API_KEY.txt
+    echo [OK] API key file already exists: SHODAN_API_KEY.txt
     set /p UPDATE_CHOICE="Update this key? (y/N): "
     if /i not "!UPDATE_CHOICE!"=="y" (
         echo Skipping Shodan...
@@ -80,7 +80,7 @@ echo Optional - Get your free API key at: https://account.shodan.io/register
 set /p SHODAN_KEY="Enter Shodan API Key (or press Enter to skip): "
 if not "!SHODAN_KEY!"=="" (
     echo !SHODAN_KEY! > "%CONFIG_DIR%\SHODAN_API_KEY.txt"
-    echo ✓ Shodan API key saved
+    echo [OK] Shodan API key saved
 ) else (
     echo Skipped Shodan (optional)
 )
@@ -91,7 +91,7 @@ REM IPinfo
 echo ----------------------------------------
 echo [IPinfo]
 if exist "%CONFIG_DIR%\IPINFO_API_KEY.txt" (
-    echo ✓ API key file already exists: IPINFO_API_KEY.txt
+    echo [OK] API key file already exists: IPINFO_API_KEY.txt
     set /p UPDATE_CHOICE="Update this key? (y/N): "
     if /i not "!UPDATE_CHOICE!"=="y" (
         echo Skipping IPinfo...
@@ -103,7 +103,7 @@ echo Optional - Get your free API key at: https://ipinfo.io/signup
 set /p IPINFO_KEY="Enter IPinfo API Key (or press Enter to skip): "
 if not "!IPINFO_KEY!"=="" (
     echo !IPINFO_KEY! > "%CONFIG_DIR%\IPINFO_API_KEY.txt"
-    echo ✓ IPinfo API key saved
+    echo [OK] IPinfo API key saved
 ) else (
     echo Skipped IPinfo (optional)
 )
@@ -114,7 +114,7 @@ REM urlscan.io
 echo ----------------------------------------
 echo [urlscan.io]
 if exist "%CONFIG_DIR%\URLSCAN_API_KEY.txt" (
-    echo ✓ API key file already exists: URLSCAN_API_KEY.txt
+    echo [OK] API key file already exists: URLSCAN_API_KEY.txt
     set /p UPDATE_CHOICE="Update this key? (y/N): "
     if /i not "!UPDATE_CHOICE!"=="y" (
         echo Skipping urlscan.io...
@@ -126,7 +126,7 @@ echo Optional - Get your free API key at: https://urlscan.io/user/signup
 set /p URLSCAN_KEY="Enter urlscan.io API Key (or press Enter to skip): "
 if not "!URLSCAN_KEY!"=="" (
     echo !URLSCAN_KEY! > "%CONFIG_DIR%\URLSCAN_API_KEY.txt"
-    echo ✓ urlscan.io API key saved
+    echo [OK] urlscan.io API key saved
 ) else (
     echo Skipped urlscan.io (optional)
 )
@@ -137,7 +137,7 @@ REM Abuse.ch (ThreatFox/URLhaus)
 echo ----------------------------------------
 echo [Abuse.ch (ThreatFox/URLhaus)]
 if exist "%CONFIG_DIR%\ABUSECH_API_KEY.txt" (
-    echo ✓ API key file already exists: ABUSECH_API_KEY.txt
+    echo [OK] API key file already exists: ABUSECH_API_KEY.txt
     set /p UPDATE_CHOICE="Update this key? (y/N): "
     if /i not "!UPDATE_CHOICE!"=="y" (
         echo Skipping Abuse.ch...
@@ -149,7 +149,7 @@ echo Optional - Get your free API key at: https://auth.abuse.ch/
 set /p ABUSECH_KEY="Enter Abuse.ch API Key (or press Enter to skip): "
 if not "!ABUSECH_KEY!"=="" (
     echo !ABUSECH_KEY! > "%CONFIG_DIR%\ABUSECH_API_KEY.txt"
-    echo ✓ Abuse.ch API key saved
+    echo [OK] Abuse.ch API key saved
 ) else (
     echo Skipped Abuse.ch (optional)
 )
@@ -162,39 +162,39 @@ echo.
 echo Summary of configured keys:
 
 if exist "%CONFIG_DIR%\ABUSEIPDB_API_KEY.txt" (
-    echo   ✓ AbuseIPDB
+    echo   [+] AbuseIPDB
 ) else (
-    echo   ✗ AbuseIPDB (not configured)
+    echo   [-] AbuseIPDB (not configured)
 )
 
 if exist "%CONFIG_DIR%\VIRUSTOTAL_API_KEY.txt" (
-    echo   ✓ VirusTotal
+    echo   [+] VirusTotal
 ) else (
-    echo   ✗ VirusTotal (optional)
+    echo   [-] VirusTotal (optional)
 )
 
 if exist "%CONFIG_DIR%\SHODAN_API_KEY.txt" (
-    echo   ✓ Shodan
+    echo   [+] Shodan
 ) else (
-    echo   ✗ Shodan (optional)
+    echo   [-] Shodan (optional)
 )
 
 if exist "%CONFIG_DIR%\IPINFO_API_KEY.txt" (
-    echo   ✓ IPinfo
+    echo   [+] IPinfo
 ) else (
-    echo   ✗ IPinfo (optional)
+    echo   [-] IPinfo (optional)
 )
 
 if exist "%CONFIG_DIR%\URLSCAN_API_KEY.txt" (
-    echo   ✓ urlscan.io
+    echo   [+] urlscan.io
 ) else (
-    echo   ✗ urlscan.io (optional)
+    echo   [-] urlscan.io (optional)
 )
 
 if exist "%CONFIG_DIR%\ABUSECH_API_KEY.txt" (
-    echo   ✓ Abuse.ch
+    echo   [+] Abuse.ch
 ) else (
-    echo   ✗ Abuse.ch (optional)
+    echo   [-] Abuse.ch (optional)
 )
 
 echo.

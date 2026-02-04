@@ -32,7 +32,7 @@ function Prompt-ApiKey {
     $FilePath = Join-Path $ConfigDir $FileName
     
     if (Test-Path $FilePath) {
-        Write-Host "✓ API key file already exists: $FileName" -ForegroundColor Green
+        Write-Host "[OK] API key file already exists: $FileName" -ForegroundColor Green
         $UpdateChoice = Read-Host "Update this key? (y/N)"
         if ($UpdateChoice -ne "y" -and $UpdateChoice -ne "Y") {
             Write-Host "Skipping $ServiceName..." -ForegroundColor Gray
@@ -57,10 +57,10 @@ function Prompt-ApiKey {
         $accessRule = New-Object System.Security.AccessControl.FileSystemAccessRule($env:USERNAME, "FullControl", "Allow")
         $acl.SetAccessRule($accessRule)
         Set-Acl -Path $FilePath -AclObject $acl
-        Write-Host "✓ $ServiceName API key saved" -ForegroundColor Green
+        Write-Host "[OK] $ServiceName API key saved" -ForegroundColor Green
     } else {
         if ($Required -eq "required") {
-            Write-Host "⚠ Warning: $ServiceName API key is required but was not provided" -ForegroundColor Yellow
+            Write-Host "[!!] Warning: $ServiceName API key is required but was not provided" -ForegroundColor Yellow
         } else {
             Write-Host "Skipped $ServiceName (optional)" -ForegroundColor Gray
         }
@@ -98,12 +98,12 @@ $Keys = @(
 foreach ($Key in $Keys) {
     $FilePath = Join-Path $ConfigDir $Key.File
     if (Test-Path $FilePath) {
-        Write-Host "  ✓ $($Key.Name)" -ForegroundColor Green
+        Write-Host "  [+] $($Key.Name)" -ForegroundColor Green
     } else {
         if ($Key.Name -eq "AbuseIPDB") {
-            Write-Host "  ✗ $($Key.Name) (not configured)" -ForegroundColor Red
+            Write-Host "  [-] $($Key.Name) (not configured)" -ForegroundColor Red
         } else {
-            Write-Host "  ✗ $($Key.Name) (optional)" -ForegroundColor Gray
+            Write-Host "  [-] $($Key.Name) (optional)" -ForegroundColor Gray
         }
     }
 }
