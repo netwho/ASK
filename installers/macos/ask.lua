@@ -250,6 +250,10 @@ local CONFIG = {
 -- Uses cached result to avoid repeated shell commands
 local openssl_check_cache = nil  -- nil = not checked, true/false = result
 
+-- Forward declaration - execute_silent is defined later but we need it here
+-- This will be set after execute_silent is defined
+local execute_silent_early = nil
+
 local function check_openssl_available()
     -- Return cached result if available
     if openssl_check_cache ~= nil then
@@ -257,20 +261,24 @@ local function check_openssl_available()
     end
     
     local is_windows = package.config:sub(1,1) == "\\"
-    local handle
     local result
     
     if is_windows then
         -- Windows: Use 'where' command to find openssl
-        -- The cmd window flash is brief for this simple check
-        handle = io.popen("where openssl 2>nul")
-        if handle then
-            result = handle:read("*a")
-            handle:close()
-            if result and result ~= "" and not string.find(result, "Could not find") then
-                openssl_check_cache = true
-                return true, result
+        if execute_silent_early then
+            -- Use silent execution to avoid cmd window flash
+            result = execute_silent_early("where openssl")
+        else
+            -- Fallback during early init (before execute_silent is defined)
+            local handle = io.popen("where openssl 2>nul")
+            if handle then
+                result = handle:read("*a")
+                handle:close()
             end
+        end
+        if result and result ~= "" and not string.find(result, "Could not find") and not string.find(result, "INFO:") then
+            openssl_check_cache = true
+            return true, result
         end
     else
         -- Unix-like (macOS, Linux) - no window issues
@@ -302,20 +310,24 @@ end
 
 -- Check if curl is available
 local function check_curl_available()
-    local handle
     local result
     local is_windows = package.config:sub(1,1) == "\\"
     
     if is_windows then
         -- Windows: Use 'where' to find curl.exe
-        -- The cmd window flash is brief for this simple check
-        handle = io.popen("where curl.exe 2>nul")
-        if handle then
-            result = handle:read("*a")
-            handle:close()
-            if result and result ~= "" and not string.find(result, "Could not find") then
-                return true, result
+        if execute_silent_early then
+            -- Use silent execution to avoid cmd window flash
+            result = execute_silent_early("where curl.exe")
+        else
+            -- Fallback during early init
+            local handle = io.popen("where curl.exe 2>nul")
+            if handle then
+                result = handle:read("*a")
+                handle:close()
             end
+        end
+        if result and result ~= "" and not string.find(result, "Could not find") and not string.find(result, "INFO:") then
+            return true, result
         end
     else
         -- Unix-like: Use 'which' command (no window issues)
@@ -365,6 +377,82 @@ end
 if package.config:sub(1,1) ~= "\\" then
     ensure_curl_checked()
 end
+
+-------------------------------------------------
+-- Silent Command Execution (Windows)
+-------------------------------------------------
+
+-- Execute command silently on Windows (suppress command window)
+-- This function uses VBScript to run commands without any visible window
+local function execute_silent(cmd)
+    local is_windows = package.config:sub(1,1) == "\\"
+    
+    if is_windows then
+        -- On Windows, use a temp file approach to capture output silently
+        -- VBScript with WScript.Shell.Run uses window style 0 (hidden)
+        local temp_out = os.tmpname()
+        local temp_bat = os.tmpname() .. ".bat"
+        
+        -- Create a batch file that runs the command and captures output
+        local bat_file = io.open(temp_bat, "w")
+        if bat_file then
+            -- Write batch file that runs command silently
+            bat_file:write("@echo off\r\n")
+            bat_file:write(cmd .. " > \"" .. temp_out .. "\" 2>&1\r\n")
+            bat_file:close()
+            
+            -- Create VBScript to run batch file hidden
+            local temp_vbs = os.tmpname() .. ".vbs"
+            local vbs_file = io.open(temp_vbs, "w")
+            if vbs_file then
+                -- WshShell.Run with 0 = hidden window, True = wait for completion
+                vbs_file:write('Set WshShell = CreateObject("WScript.Shell")\n')
+                vbs_file:write('WshShell.Run "cmd /c \"\"' .. temp_bat:gsub("\\", "\\\\") .. '\"\"", 0, True\n')
+                vbs_file:close()
+                
+                -- Execute VBScript (this call itself may briefly flash, but much less than multiple commands)
+                os.execute('cscript //nologo "' .. temp_vbs .. '"')
+                
+                -- Read output
+                local output = ""
+                local out_file = io.open(temp_out, "r")
+                if out_file then
+                    output = out_file:read("*a") or ""
+                    out_file:close()
+                end
+                
+                -- Cleanup
+                os.remove(temp_vbs)
+                os.remove(temp_bat)
+                os.remove(temp_out)
+                
+                return output, true  -- Return output and success flag
+            end
+            os.remove(temp_bat)
+        end
+        
+        -- Fallback: direct io.popen if VBScript approach fails
+        local handle = io.popen(cmd .. " 2>&1")
+        if handle then
+            local result = handle:read("*a") or ""
+            handle:close()
+            return result, true
+        end
+        return "", false
+    else
+        -- On Unix-like systems, use io.popen normally (no window issues)
+        local handle = io.popen(cmd .. " 2>&1")
+        if handle then
+            local result = handle:read("*a") or ""
+            local success = handle:close()
+            return result, success
+        end
+        return "", false
+    end
+end
+
+-- Now that execute_silent is defined, make it available for tool checks
+execute_silent_early = execute_silent
 
 -------------------------------------------------
 -- ASK Documents Directory and Logging
@@ -474,11 +562,10 @@ local function ensure_ask_directory()
     end
     
     -- Directory doesn't exist, try to create it
-    -- This is called during user action, so a brief window flash is acceptable
     if package.config:sub(1,1) == "\\" then
-        -- Windows: Use PowerShell with hidden window
-        local cmd = 'powershell -WindowStyle Hidden -Command "New-Item -ItemType Directory -Force -Path \'' .. ASK_DOCS_DIR .. '\' | Out-Null"'
-        os.execute(cmd)
+        -- Windows: Use execute_silent to avoid cmd window flash
+        local cmd = 'mkdir "' .. ASK_DOCS_DIR .. '"'
+        execute_silent(cmd)
     else
         os.execute('mkdir -p "' .. ASK_DOCS_DIR .. '" 2>/dev/null')
     end
@@ -537,16 +624,17 @@ local function copy_to_clipboard(text)
     local cmd
     
     if package.config:sub(1,1) == "\\" then
-        -- Windows: Use clip command
+        -- Windows: Use clip command via execute_silent to avoid cmd window flash
         local temp_file = os.tmpname()
         local f = io.open(temp_file, "w")
         if f then
             f:write(text)
             f:close()
             cmd = 'type "' .. temp_file .. '" | clip'
-            local result = os.execute(cmd)
+            local result = execute_silent(cmd)
             os.remove(temp_file)
-            success = (result == 0 or result == true)
+            -- execute_silent returns (output, success), check if it ran
+            success = true  -- clip doesn't output anything, assume success if no error
         end
     else
         -- macOS: Use pbcopy
@@ -926,65 +1014,95 @@ local function http_get(url, headers, opts)
         return nil, "curl is not available. Please install curl first."
     end
     
-    -- Build curl command with proper escaping
+    local is_windows = package.config:sub(1,1) == "\\"
+    local result
+    local is_success
+    
+    -- Build curl command
     -- Use -s (silent), -S (show errors), --max-time (timeout), -L (follow redirects)
-    -- Note: Removed -f flag to allow non-2xx responses (some APIs return data with 3xx redirects)
-    local cmd_parts = {"curl", "-s", "-S", "--max-time", "30", "-L"}
+    local cmd
     
-    -- Add headers
-    for key, value in pairs(headers) do
-        table.insert(cmd_parts, "-H")
-        table.insert(cmd_parts, key .. ": " .. value)
-    end
-    
-    -- Add URL (last argument) - use single quotes to avoid shell interpretation
-    table.insert(cmd_parts, url)
-    
-    -- Convert to command string with proper quoting
-    local cmd = ""
-    for i, part in ipairs(cmd_parts) do
-        if i > 1 then cmd = cmd .. " " end
-        -- Quote arguments that contain spaces or special characters
-        if string.find(part, "[ %$`\"'\\]") then
-            -- Escape single quotes and wrap in single quotes
-            local escaped = string.gsub(part, "'", "'\\''")
-            cmd = cmd .. "'" .. escaped .. "'"
-        else
-            cmd = cmd .. part
+    if is_windows then
+        -- Windows: Build command with double-quote escaping
+        cmd = 'curl -s -S --max-time 30 -L'
+        
+        -- Add headers
+        for key, value in pairs(headers) do
+            cmd = cmd .. ' -H "' .. key .. ': ' .. value .. '"'
         end
-    end
-    
-    log_message("Executing curl for: " .. url)
-    
-    local handle = io.popen(cmd)
-    if not handle then
-        return nil, "Failed to execute curl command. Command: " .. cmd
-    end
-    
-    local result = handle:read("*a")
-    
-    -- Try to get exit code, but handle nil gracefully (common on macOS)
-    local exit_code
-    local close_success, close_result = pcall(function() return handle:close() end)
-    if close_success then
-        exit_code = close_result
-    end
-    
-    -- Determine if the request was successful
-    -- exit_code can be: 0 (success), non-zero (failure), true (success), false (failure), or nil
-    local is_success = false
-    if exit_code == nil then
-        -- No exit code available, check result content
-        is_success = (result and result ~= "")
-    elseif exit_code == true or exit_code == 0 then
-        -- Boolean true or numeric 0 means success
-        is_success = true
-    elseif exit_code == false then
-        -- Boolean false means failure
-        is_success = false
+        
+        -- Add URL with double quotes
+        cmd = cmd .. ' "' .. url .. '"'
+        
+        log_message("Executing curl (silent) for: " .. url)
+        
+        -- Use execute_silent to avoid cmd window flash
+        result, is_success = execute_silent(cmd)
+        
+        -- execute_silent returns (output, success_flag)
+        -- Treat any non-empty result as potential success
+        if result and result ~= "" then
+            is_success = true
+        end
     else
-        -- Numeric non-zero means failure
+        -- Unix: Build command with single-quote escaping
+        local cmd_parts = {"curl", "-s", "-S", "--max-time", "30", "-L"}
+        
+        -- Add headers
+        for key, value in pairs(headers) do
+            table.insert(cmd_parts, "-H")
+            table.insert(cmd_parts, key .. ": " .. value)
+        end
+        
+        -- Add URL
+        table.insert(cmd_parts, url)
+        
+        -- Convert to command string with proper quoting
+        cmd = ""
+        for i, part in ipairs(cmd_parts) do
+            if i > 1 then cmd = cmd .. " " end
+            -- Quote arguments that contain spaces or special characters
+            if string.find(part, "[ %$`\"'\\]") then
+                -- Escape single quotes and wrap in single quotes
+                local escaped = string.gsub(part, "'", "'\\''")
+                cmd = cmd .. "'" .. escaped .. "'"
+            else
+                cmd = cmd .. part
+            end
+        end
+        
+        log_message("Executing curl for: " .. url)
+        
+        local handle = io.popen(cmd)
+        if not handle then
+            return nil, "Failed to execute curl command. Command: " .. cmd
+        end
+        
+        result = handle:read("*a")
+        
+        -- Try to get exit code, but handle nil gracefully (common on macOS)
+        local exit_code
+        local close_success, close_result = pcall(function() return handle:close() end)
+        if close_success then
+            exit_code = close_result
+        end
+        
+        -- Determine if the request was successful
+        -- exit_code can be: 0 (success), non-zero (failure), true (success), false (failure), or nil
         is_success = false
+        if exit_code == nil then
+            -- No exit code available, check result content
+            is_success = (result and result ~= "")
+        elseif exit_code == true or exit_code == 0 then
+            -- Boolean true or numeric 0 means success
+            is_success = true
+        elseif exit_code == false then
+            -- Boolean false means failure
+            is_success = false
+        else
+            -- Numeric non-zero means failure
+            is_success = false
+        end
     end
     
     -- If we have a result, check if it looks like an error
@@ -6514,9 +6632,6 @@ local function check_certificate_crtsh(hostname)
     return result, nil
 end
 
--- Forward declaration for execute_silent (defined later in DNS Analytics section)
-local execute_silent_for_openssl
-
 -- OpenSSL-based basic certificate check (quick and simple)
 -- Note: Caller should check OpenSSL availability first using check_openssl_available()
 local function check_certificate_openssl(hostname, port)
@@ -6533,20 +6648,11 @@ local function check_certificate_openssl(hostname, port)
     log_message("Using OpenSSL for: " .. hostname .. ":" .. port)
     
     if is_windows then
-        -- Windows: Build the OpenSSL command
+        -- Windows: Build the OpenSSL command and run silently
         cmd = string.format('echo. | openssl s_client -connect %s:%d -servername %s 2>nul | openssl x509 -noout -dates -subject -issuer', hostname, port, hostname)
         
-        -- Use execute_silent_for_openssl if available (avoids window flash)
-        if execute_silent_for_openssl then
-            output = execute_silent_for_openssl(cmd)
-        else
-            -- Fallback: Use io.popen directly (may flash window)
-            local handle = io.popen(cmd .. " 2>&1")
-            if handle then
-                output = handle:read("*a")
-                handle:close()
-            end
-        end
+        -- Use execute_silent to avoid window flash
+        output = execute_silent(cmd)
     else
         -- Unix-like: use pipe directly (no window issues)
         cmd = string.format("echo | openssl s_client -connect %s:%d -servername %s 2>/dev/null | openssl x509 -noout -dates -subject -issuer 2>&1", hostname, port, hostname)
@@ -7003,74 +7109,6 @@ end
 -- DNS Analytics Module for IP Addresses
 -------------------------------------------------
 
--- Execute command silently on Windows (suppress command window)
-local function execute_silent(cmd)
-    local is_windows = package.config:sub(1,1) == "\\"
-    
-    if is_windows then
-        -- On Windows, use VBScript to run command completely silently (no window flash)
-        local temp_out = os.tmpname() .. ".txt"
-        local temp_vbs = os.tmpname() .. ".vbs"
-        
-        -- Escape quotes in command for VBScript (double them)
-        local escaped_cmd = cmd:gsub('"', '""')
-        
-        -- Create VBScript that runs command silently (window style 0 = hidden)
-        local vbs_content = string.format([[
-Set WshShell = CreateObject("WScript.Shell")
-Set fso = CreateObject("Scripting.FileSystemObject")
-WshShell.Run "cmd /c %s > ""%s"" 2>&1", 0, True
-Set f = fso.OpenTextFile("%s", 1)
-If Not f.AtEndOfStream Then
-    WScript.StdOut.Write f.ReadAll
-End If
-f.Close
-fso.DeleteFile "%s"
-]], escaped_cmd, temp_out, temp_out, temp_out)
-        
-        local vbs_file = io.open(temp_vbs, "w")
-        if vbs_file then
-            vbs_file:write(vbs_content)
-            vbs_file:close()
-            
-            -- Execute VBScript (runs silently, //nologo suppresses VBScript banner)
-            local handle = io.popen(string.format('cscript //nologo "%s"', temp_vbs))
-            local output = ""
-            if handle then
-                output = handle:read("*a") or ""
-                handle:close()
-            end
-            
-            -- Clean up VBScript file
-            os.remove(temp_vbs)
-            
-            return output
-        end
-        
-        -- Fallback: use io.popen if VBScript creation fails
-        local handle = io.popen(cmd .. " 2>&1")
-        if handle then
-            local result = handle:read("*a") or ""
-            handle:close()
-            return result
-        end
-        return ""
-    else
-        -- On Unix-like systems, use io.popen normally
-        local handle = io.popen(cmd .. " 2>&1")
-        if handle then
-            local result = handle:read("*a") or ""
-            handle:close()
-            return result
-        end
-        return ""
-    end
-end
-
--- Make execute_silent available to OpenSSL certificate check (forward declared earlier)
-execute_silent_for_openssl = execute_silent
-
--- Check which DNS tool is available (dig preferred, nslookup as fallback)
 -- Convert IP address to reverse DNS format for PTR queries
 local function ip_to_reverse_dns(ip)
     if not ip or ip == "" then
