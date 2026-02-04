@@ -11,11 +11,16 @@
 ### Step 1: Install the Plugin
 
 **Option A: Using Installer Script (Recommended)**
-```powershell
-# Run PowerShell as Administrator (optional, for script execution)
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-.\install.ps1
+```cmd
+.\install.bat
 ```
+
+The batch file launcher (`install.bat`) automatically runs the PowerShell installer with the correct execution policy. This works even when running from network shares or when PowerShell scripts are blocked by policy.
+
+> **Note:** If you prefer to run the PowerShell script directly:
+> ```powershell
+> powershell -ExecutionPolicy Bypass -File .\install.ps1
+> ```
 
 The installer will:
 - Check Wireshark version
@@ -171,9 +176,19 @@ Close and reopen Wireshark to load the plugin.
 - Right-click Wireshark → "Run as administrator"
 
 ### PowerShell Execution Policy
-If scripts won't run:
+If scripts won't run, use the batch file launcher instead:
+```cmd
+.\install.bat
+```
+
+The batch file automatically bypasses execution policy restrictions. This is especially useful when:
+- Running from network shares (UNC paths like `\\server\share\...`)
+- Corporate environments with restricted PowerShell policies
+- Scripts are not digitally signed
+
+Alternatively, run PowerShell directly with bypass:
 ```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
 ## Features Available on Windows

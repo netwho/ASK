@@ -119,7 +119,7 @@ if exist "%CONFIG_DIR%\URLSCAN_API_KEY.txt" (
     if /i not "!UPDATE_CHOICE!"=="y" (
         echo Skipping urlscan.io...
         echo.
-        goto :summary
+        goto :abusech
     )
 )
 echo Optional - Get your free API key at: https://urlscan.io/user/signup
@@ -129,6 +129,29 @@ if not "!URLSCAN_KEY!"=="" (
     echo ✓ urlscan.io API key saved
 ) else (
     echo Skipped urlscan.io (optional)
+)
+echo.
+
+:abusech
+REM Abuse.ch (ThreatFox/URLhaus)
+echo ----------------------------------------
+echo [Abuse.ch (ThreatFox/URLhaus)]
+if exist "%CONFIG_DIR%\ABUSECH_API_KEY.txt" (
+    echo ✓ API key file already exists: ABUSECH_API_KEY.txt
+    set /p UPDATE_CHOICE="Update this key? (y/N): "
+    if /i not "!UPDATE_CHOICE!"=="y" (
+        echo Skipping Abuse.ch...
+        echo.
+        goto :summary
+    )
+)
+echo Optional - Get your free API key at: https://auth.abuse.ch/
+set /p ABUSECH_KEY="Enter Abuse.ch API Key (or press Enter to skip): "
+if not "!ABUSECH_KEY!"=="" (
+    echo !ABUSECH_KEY! > "%CONFIG_DIR%\ABUSECH_API_KEY.txt"
+    echo ✓ Abuse.ch API key saved
+) else (
+    echo Skipped Abuse.ch (optional)
 )
 echo.
 
@@ -166,6 +189,12 @@ if exist "%CONFIG_DIR%\URLSCAN_API_KEY.txt" (
     echo   ✓ urlscan.io
 ) else (
     echo   ✗ urlscan.io (optional)
+)
+
+if exist "%CONFIG_DIR%\ABUSECH_API_KEY.txt" (
+    echo   ✓ Abuse.ch
+) else (
+    echo   ✗ Abuse.ch (optional)
 )
 
 echo.

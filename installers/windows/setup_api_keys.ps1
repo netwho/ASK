@@ -79,6 +79,8 @@ Prompt-ApiKey -ServiceName "IPinfo" -FileName "IPINFO_API_KEY.txt" -Url "https:/
 
 Prompt-ApiKey -ServiceName "urlscan.io" -FileName "URLSCAN_API_KEY.txt" -Url "https://urlscan.io/user/signup" -Required "optional"
 
+Prompt-ApiKey -ServiceName "Abuse.ch (ThreatFox/URLhaus)" -FileName "ABUSECH_API_KEY.txt" -Url "https://auth.abuse.ch/" -Required "optional"
+
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "Setup complete! API keys are stored in $ConfigDir" -ForegroundColor Green
 Write-Host ""
@@ -89,7 +91,8 @@ $Keys = @(
     @{Name="VirusTotal"; File="VIRUSTOTAL_API_KEY.txt"},
     @{Name="Shodan"; File="SHODAN_API_KEY.txt"},
     @{Name="IPinfo"; File="IPINFO_API_KEY.txt"},
-    @{Name="urlscan.io"; File="URLSCAN_API_KEY.txt"}
+    @{Name="urlscan.io"; File="URLSCAN_API_KEY.txt"},
+    @{Name="Abuse.ch"; File="ABUSECH_API_KEY.txt"}
 )
 
 foreach ($Key in $Keys) {
