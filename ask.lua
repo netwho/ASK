@@ -247,58 +247,123 @@ local CONFIG = {
 -------------------------------------------------
 
 -- Check if openssl is available
+-- Uses cached result to avoid repeated shell commands
+local openssl_check_cache = nil  -- nil = not checked, true/false = result
+
 local function check_openssl_available()
-    -- Try different methods depending on platform
+    -- Return cached result if available
+    if openssl_check_cache ~= nil then
+        return openssl_check_cache
+    end
+    
+    local is_windows = package.config:sub(1,1) == "\\"
     local handle
-    if package.config:sub(1,1) == "\\" then
-        -- Windows
-        handle = io.popen("where openssl 2>&1")
+    local result
+    
+    if is_windows then
+        -- Windows: Use 'where' command to find openssl
+        -- The cmd window flash is brief for this simple check
+        handle = io.popen("where openssl 2>nul")
+        if handle then
+            result = handle:read("*a")
+            handle:close()
+            if result and result ~= "" and not string.find(result, "Could not find") then
+                openssl_check_cache = true
+                return true, result
+            end
+        end
     else
-        -- Unix-like (macOS, Linux)
+        -- Unix-like (macOS, Linux) - no window issues
         handle = io.popen("which openssl 2>&1")
-    end
-    
-    if handle then
-        local result = handle:read("*a")
-        handle:close()
-        -- Check if openssl was found (not an error message)
-        if result and result ~= "" and not string.find(result, "not found") and not string.find(result, "could not be found") then
-            return true, result
+        if handle then
+            result = handle:read("*a")
+            handle:close()
+            if result and result ~= "" and not string.find(result, "not found") then
+                openssl_check_cache = true
+                return true, result
+            end
+        end
+        
+        -- Try direct execution test
+        local test_handle = io.popen("openssl version 2>&1")
+        if test_handle then
+            local version_output = test_handle:read("*a")
+            test_handle:close()
+            if version_output and string.find(version_output, "OpenSSL") then
+                openssl_check_cache = true
+                return true, version_output
+            end
         end
     end
     
-    -- Try direct execution test
-    local test_handle = io.popen("openssl version 2>&1")
-    if test_handle then
-        local version_output = test_handle:read("*a")
-        test_handle:close()
-        if version_output and string.find(version_output, "OpenSSL") then
-            return true, version_output
-        end
-    end
-    
+    openssl_check_cache = false
     return false, nil
 end
 
 -- Check if curl is available
 local function check_curl_available()
-    local handle = io.popen("which curl 2>&1")
-    if handle then
-        local result = handle:read("*a")
-        handle:close()
-        if result and result ~= "" and not string.find(result, "not found") then
-            return true, result
+    local handle
+    local result
+    local is_windows = package.config:sub(1,1) == "\\"
+    
+    if is_windows then
+        -- Windows: Use 'where' to find curl.exe
+        -- The cmd window flash is brief for this simple check
+        handle = io.popen("where curl.exe 2>nul")
+        if handle then
+            result = handle:read("*a")
+            handle:close()
+            if result and result ~= "" and not string.find(result, "Could not find") then
+                return true, result
+            end
+        end
+    else
+        -- Unix-like: Use 'which' command (no window issues)
+        handle = io.popen("which curl 2>&1")
+        if handle then
+            result = handle:read("*a")
+            handle:close()
+            if result and result ~= "" and not string.find(result, "not found") then
+                return true, result
+            end
+        end
+        
+        -- Fallback: Try running curl directly to check version
+        local test_handle = io.popen("curl --version 2>&1")
+        if test_handle then
+            local test_output = test_handle:read("*a")
+            test_handle:close()
+            if test_output and string.find(test_output, "curl") then
+                return true, "curl (found via version check)"
+            end
         end
     end
+    
     return false, "curl not found in PATH"
 end
 
--- Initialize curl check on load
-local curl_available, curl_path = check_curl_available()
-if not curl_available then
-    log_message("WARNING: curl not found. HTTP requests will fail. Install curl first.")
-else
-    log_message("curl found at: " .. string.gsub(curl_path, "\n", ""))
+-- Initialize curl availability variable
+-- On Windows, defer the check to first use to avoid cmd window flash on plugin load
+local curl_available = nil  -- nil means not checked yet
+local curl_path = nil
+
+-- Lazy curl check function
+local function ensure_curl_checked()
+    if curl_available == nil then
+        curl_available, curl_path = check_curl_available()
+        if not curl_available then
+            log_message("WARNING: curl not found. HTTP requests will fail. Install curl first.")
+        else
+            log_message("curl found at: " .. string.gsub(curl_path or "", "\n", ""))
+        end
+    end
+    return curl_available
+end
+
+-- On Unix, check immediately (no window flash issue)
+-- On Windows, defer to first use
+if package.config:sub(1,1) ~= "\\" then
+    ensure_curl_checked()
 end
 
 -------------------------------------------------
@@ -313,8 +378,9 @@ local function init_ask_directory()
     -- Determine home directory based on platform
     local home_dir
     local path_sep
+    local is_windows = package.config:sub(1,1) == "\\"
     
-    if package.config:sub(1,1) == "\\" then
+    if is_windows then
         -- Windows
         home_dir = os.getenv("USERPROFILE")
         path_sep = "\\"
@@ -329,24 +395,11 @@ local function init_ask_directory()
         return nil
     end
     
-    -- Create ASK directory in Documents folder
-    local docs_dir = home_dir .. path_sep .. "Documents" .. path_sep .. "ASK"
+    -- Build path: Documents/ASK
+    local docs_base = home_dir .. path_sep .. "Documents"
+    local docs_dir = docs_base .. path_sep .. "ASK"
     
-    -- Try to create directory (will succeed if already exists on most systems)
-    local success = false
-    if package.config:sub(1,1) == "\\" then
-        -- Windows
-        local cmd = 'if not exist "' .. docs_dir .. '" mkdir "' .. docs_dir .. '"'
-        local result = os.execute(cmd)
-        success = (result == 0 or result == true)
-    else
-        -- Unix-like
-        local cmd = 'mkdir -p "' .. docs_dir .. '" 2>/dev/null'
-        local result = os.execute(cmd)
-        success = (result == 0 or result == true)
-    end
-    
-    -- Verify directory exists by trying to write a test file
+    -- First, try to write to the directory (it might already exist)
     local test_file = docs_dir .. path_sep .. ".ask_test"
     local f = io.open(test_file, "w")
     if f then
@@ -354,10 +407,43 @@ local function init_ask_directory()
         os.remove(test_file)
         log_message("ASK directory initialized: " .. docs_dir)
         return docs_dir
-    else
-        log_message("WARNING: Cannot write to ASK directory - logging disabled")
-        return nil
     end
+    
+    -- Directory doesn't exist, try to create it
+    -- On Windows, avoid os.execute/io.popen during init to prevent cmd window flash
+    -- Use Lua's lfs if available, otherwise just try pure Lua approaches
+    if is_windows then
+        -- On Windows, we avoid shell commands during plugin load
+        -- The directory will be created lazily when first log write is attempted
+        -- For now, check if Documents exists and ASK can be created
+        local docs_test = io.open(docs_base .. path_sep .. ".ask_test_docs", "w")
+        if docs_test then
+            docs_test:close()
+            os.remove(docs_base .. path_sep .. ".ask_test_docs")
+            -- Documents exists, but ASK subfolder doesn't
+            -- We'll create it on first log write using PowerShell with -WindowStyle Hidden
+            -- For now, just return the path and create lazily
+            log_message("ASK directory path set (will create on first use): " .. docs_dir)
+            return docs_dir
+        end
+        log_message("WARNING: Cannot access Documents folder - logging disabled")
+        return nil
+    else
+        -- Unix-like: mkdir -p is safe and doesn't show any window
+        local result = os.execute('mkdir -p "' .. docs_dir .. '" 2>/dev/null')
+        
+        -- Verify directory was created
+        f = io.open(test_file, "w")
+        if f then
+            f:close()
+            os.remove(test_file)
+            log_message("ASK directory initialized: " .. docs_dir)
+            return docs_dir
+        end
+    end
+    
+    log_message("WARNING: Cannot write to ASK directory - logging disabled")
+    return nil
 end
 
 -- Get current date string for log filename (YYYY-MM-DD format)
@@ -370,10 +456,53 @@ local function get_timestamp()
     return os.date("%Y-%m-%d %H:%M:%S")
 end
 
+-- Ensure ASK directory exists (lazy creation for Windows)
+local function ensure_ask_directory()
+    if not ASK_DOCS_DIR then
+        return false
+    end
+    
+    local path_sep = package.config:sub(1,1) == "\\" and "\\" or "/"
+    local test_file = ASK_DOCS_DIR .. path_sep .. ".ask_test"
+    
+    -- Check if directory exists by trying to write a test file
+    local f = io.open(test_file, "w")
+    if f then
+        f:close()
+        os.remove(test_file)
+        return true
+    end
+    
+    -- Directory doesn't exist, try to create it
+    -- This is called during user action, so a brief window flash is acceptable
+    if package.config:sub(1,1) == "\\" then
+        -- Windows: Use PowerShell with hidden window
+        local cmd = 'powershell -WindowStyle Hidden -Command "New-Item -ItemType Directory -Force -Path \'' .. ASK_DOCS_DIR .. '\' | Out-Null"'
+        os.execute(cmd)
+    else
+        os.execute('mkdir -p "' .. ASK_DOCS_DIR .. '" 2>/dev/null')
+    end
+    
+    -- Verify it was created
+    f = io.open(test_file, "w")
+    if f then
+        f:close()
+        os.remove(test_file)
+        return true
+    end
+    
+    return false
+end
+
 -- Append content to daily log file
 local function append_to_log(query_type, query_target, result_content)
     if not ASK_DOCS_DIR then
         return false, "Logging not initialized"
+    end
+    
+    -- Ensure directory exists (lazy creation)
+    if not ensure_ask_directory() then
+        return false, "Cannot create ASK directory: " .. ASK_DOCS_DIR
     end
     
     local path_sep = package.config:sub(1,1) == "\\" and "\\" or "/"
@@ -700,9 +829,9 @@ local function is_valid_url(url)
     return string.find(url, "^https?://") ~= nil
 end
 
--- HTTP GET request with error handling
+-- HTTP POST request with error handling
 local function http_post(url, headers, body)
-    if not check_curl_available() then
+    if not ensure_curl_checked() then
         return nil, "curl is not available. Please install curl to use this feature."
     end
     
@@ -792,8 +921,8 @@ local function http_get(url, headers, opts)
         return nil, "Invalid URL: empty or nil"
     end
     
-    -- Check if curl is available
-    if not curl_available then
+    -- Check if curl is available (lazy check on Windows to avoid cmd window flash)
+    if not ensure_curl_checked() then
         return nil, "curl is not available. Please install curl first."
     end
     
@@ -6306,129 +6435,92 @@ local function check_certificate_ssllabs(hostname, port)
     return result, nil
 end
 
--- SSLChecker.com API for quick certificate validation
-local function check_certificate_sslchecker(hostname, port)
-    port = port or 443
-    
+-- crt.sh API for certificate transparency lookup
+-- This provides historical certificate information from CT logs
+local function check_certificate_crtsh(hostname)
     -- Remove protocol prefix if present
     local domain = string.gsub(hostname, "^https?://", "")
     domain = string.gsub(domain, "^www%.", "")
     
-    log_message("Querying SSLChecker.com API for certificate: " .. domain)
+    log_message("Querying crt.sh for certificate: " .. domain)
     
-    -- SSLChecker.com API endpoint (no API key required, free service)
-    -- Note: This is an unofficial API endpoint based on their public service
-    local api_url = string.format("https://www.sslchecker.com/certcheck?host=%s&port=%d", domain, port)
+    -- crt.sh JSON API endpoint
+    local api_url = string.format("https://crt.sh/?q=%s&output=json", domain)
     
     -- Make HTTP GET request
     local response, err = http_get(api_url, {})
     if err then
-        return nil, "SSLChecker.com API query failed: " .. err
+        return nil, "crt.sh API query failed: " .. err
     end
     
     if not response or response == "" then
-        return nil, "Empty response from SSLChecker.com API"
+        return nil, "Empty response from crt.sh API"
     end
     
-    -- Parse JSON response
+    -- Parse JSON response (returns an array of certificates)
     local json_data = parse_json(response)
-    if not json_data then
-        -- If JSON parsing fails, fall back to OpenSSL
-        return nil, "Failed to parse SSLChecker.com API response"
+    if not json_data or type(json_data) ~= "table" then
+        return nil, "Failed to parse crt.sh API response"
     end
+    
+    if #json_data == 0 then
+        return nil, "No certificates found for " .. domain .. " in Certificate Transparency logs"
+    end
+    
+    -- Get the most recent certificate (first in list, sorted by not_before desc)
+    local cert = json_data[1]
     
     -- Extract certificate information
     local result = {}
     result.hostname = domain
-    result.port = port
-    result.source = "SSLChecker.com API"
+    result.port = 443
+    result.source = "crt.sh (Certificate Transparency)"
     
-    -- Map common fields
-    if json_data.subject then
-        result.subject = json_data.subject
+    if cert.common_name then
+        result.subject = cert.common_name
     end
     
-    if json_data.issuer then
-        result.issuer = json_data.issuer
+    if cert.issuer_name then
+        result.issuer = cert.issuer_name
     end
     
-    if json_data.valid_from or json_data.notBefore then
-        result.notBefore = json_data.valid_from or json_data.notBefore
+    if cert.not_before then
+        result.notBefore = cert.not_before
     end
     
-    if json_data.valid_to or json_data.notAfter or json_data.expires then
-        result.notAfter = json_data.valid_to or json_data.notAfter or json_data.expires
-    end
-    
-    if json_data.days_left or json_data.days_until_expiry then
-        result.daysUntilExpiry = tonumber(json_data.days_left or json_data.days_until_expiry)
-        result.isExpired = (result.daysUntilExpiry and result.daysUntilExpiry < 0) or false
-    end
-    
-    if json_data.serial or json_data.serialNumber then
-        result.serial = json_data.serial or json_data.serialNumber
-    end
-    
-    if json_data.algorithm or json_data.signature_algorithm then
-        result.algorithm = json_data.algorithm or json_data.signature_algorithm
-    end
-    
-    if json_data.san or json_data.sans then
-        local sans = json_data.san or json_data.sans
-        if type(sans) == "table" then
-            result.sans = table.concat(sans, ", ")
-        else
-            result.sans = sans
+    if cert.not_after then
+        result.notAfter = cert.not_after
+        -- Check if expired
+        local year, month, day = string.match(cert.not_after, "(%d+)-(%d+)-(%d+)")
+        if year then
+            local expiry_time = os.time({year=tonumber(year), month=tonumber(month), day=tonumber(day)})
+            local now = os.time()
+            result.isExpired = (expiry_time < now)
+            result.daysUntilExpiry = math.floor((expiry_time - now) / 86400)
         end
     end
+    
+    if cert.serial_number then
+        result.serial = cert.serial_number
+    end
+    
+    -- Include CT log info
+    result.ctLogId = cert.id
+    result.ctLogEntryTimestamp = cert.entry_timestamp
+    
+    -- Count total certificates found
+    result.totalCertsFound = #json_data
     
     return result, nil
 end
 
+-- Forward declaration for execute_silent (defined later in DNS Analytics section)
+local execute_silent_for_openssl
+
 -- OpenSSL-based basic certificate check (quick and simple)
+-- Note: Caller should check OpenSSL availability first using check_openssl_available()
 local function check_certificate_openssl(hostname, port)
     port = port or 443
-    
-    -- Check if OpenSSL is available FIRST (fast check before attempting connection)
-    local openssl_available = check_openssl_available()
-    if not openssl_available then
-        local is_windows = package.config:sub(1,1) == "\\"
-        local install_instructions
-        if is_windows then
-            install_instructions = "OpenSSL is not installed or not found in PATH.\n\n" ..
-                                  "Installation Instructions for Windows:\n" ..
-                                  "1. Download from: https://slproweb.com/products/Win32OpenSSL.html\n" ..
-                                  "   OR install via Chocolatey: choco install openssl\n" ..
-                                  "2. Add OpenSSL to your system PATH\n" ..
-                                  "3. Restart Wireshark"
-        else
-            local uname_handle = io.popen("uname -s 2>&1")
-            local platform = "Linux"
-            if uname_handle then
-                local uname_output = uname_handle:read("*a")
-                uname_handle:close()
-                if string.find(uname_output, "Darwin") then
-                    platform = "macOS"
-                end
-            end
-            
-            if platform == "macOS" then
-                install_instructions = "OpenSSL is not installed or not found in PATH.\n\n" ..
-                                      "Installation Instructions for macOS:\n" ..
-                                      "brew install openssl\n" ..
-                                      "OR\n" ..
-                                      "sudo port install openssl"
-            else
-                install_instructions = "OpenSSL is not installed or not found in PATH.\n\n" ..
-                                      "Installation Instructions for Linux:\n" ..
-                                      "Debian/Ubuntu: sudo apt-get install openssl\n" ..
-                                      "RedHat/CentOS: sudo yum install openssl\n" ..
-                                      "Fedora: sudo dnf install openssl\n" ..
-                                      "Arch: sudo pacman -S openssl"
-            end
-        end
-        return nil, install_instructions
-    end
     
     -- Remove protocol prefix if present
     hostname = string.gsub(hostname, "^https?://", "")
@@ -6441,23 +6533,37 @@ local function check_certificate_openssl(hostname, port)
     log_message("Using OpenSSL for: " .. hostname .. ":" .. port)
     
     if is_windows then
-        -- Windows: simple command
-        cmd = string.format('echo. | openssl s_client -connect %s:%d -servername %s 2^>nul | openssl x509 -noout -dates -subject -issuer 2^>^&1', hostname, port, hostname)
+        -- Windows: Build the OpenSSL command
+        cmd = string.format('echo. | openssl s_client -connect %s:%d -servername %s 2>nul | openssl x509 -noout -dates -subject -issuer', hostname, port, hostname)
+        
+        -- Use execute_silent_for_openssl if available (avoids window flash)
+        if execute_silent_for_openssl then
+            output = execute_silent_for_openssl(cmd)
+        else
+            -- Fallback: Use io.popen directly (may flash window)
+            local handle = io.popen(cmd .. " 2>&1")
+            if handle then
+                output = handle:read("*a")
+                handle:close()
+            end
+        end
     else
-        -- Unix-like: use pipe directly
+        -- Unix-like: use pipe directly (no window issues)
         cmd = string.format("echo | openssl s_client -connect %s:%d -servername %s 2>/dev/null | openssl x509 -noout -dates -subject -issuer 2>&1", hostname, port, hostname)
-    end
-    
-    local handle = io.popen(cmd)
-    if handle then
-        output = handle:read("*a")
-        handle:close()
-    else
-        return nil, "Failed to execute OpenSSL command"
+        local handle = io.popen(cmd)
+        if handle then
+            output = handle:read("*a")
+            handle:close()
+        end
     end
     
     if not output or output == "" then
-        return nil, "No certificate information returned from OpenSSL"
+        return nil, "No certificate information returned from OpenSSL.\n\n" ..
+                   "This could mean:\n" ..
+                   "• OpenSSL is not installed or not in PATH\n" ..
+                   "• The host is unreachable or not responding on port " .. port .. "\n" ..
+                   "• The connection timed out\n\n" ..
+                   "Please verify OpenSSL is installed and the host is accessible."
     end
     
     -- Parse certificate information
@@ -6505,7 +6611,7 @@ local function check_certificate_validity(hostname, port)
     port = port or 443
     
     -- Try SSLLabs API (no API key required, comprehensive analysis)
-    if curl_available then
+    if ensure_curl_checked() then
         log_message("Attempting certificate check via SSLLabs API")
         local api_result, api_err = check_certificate_ssllabs(hostname, port)
         if not api_err and api_result then
@@ -6580,12 +6686,16 @@ local function format_cert_validity_result(data, hostname)
         result = result .. "• Basic certificate validation\n"
         result = result .. "• Direct connection to server\n"
         result = result .. "• Fast, no external API dependencies\n\n"
-    elseif data.source == "SSLChecker.com API" then
+    elseif data.source == "crt.sh (Certificate Transparency)" then
         result = result .. "--- Data Source ---\n"
-        result = result .. "Method: SSLChecker.com API\n"
-        result = result .. "• Quick certificate validation\n"
-        result = result .. "• Basic security information\n"
-        result = result .. "• Free service, no API key required\n\n"
+        result = result .. "Method: crt.sh (Certificate Transparency Logs)\n"
+        result = result .. "• Shows certificates logged to CT logs\n"
+        result = result .. "• Historical certificate data\n"
+        result = result .. "• Free service, no API key required\n"
+        if data.totalCertsFound and data.totalCertsFound > 1 then
+            result = result .. "• Found " .. data.totalCertsFound .. " certificates for this domain\n"
+        end
+        result = result .. "\n"
     end
     
     result = result .. "Host: " .. (data.hostname or hostname or "unknown") .. "\n"
@@ -6834,23 +6944,23 @@ local function quick_cert_check_callback(...)
     show_result_window_with_buttons("Quick Certificate Check: " .. hostname, formatted, "Quick Certificate Check", hostname)
 end
 
--- 2. Certificate Validator (SSLChecker.com) - Middle ground
+-- 2. Certificate Validator (crt.sh - Certificate Transparency) - Shows certificate history
 local function cert_validator_callback(...)
     local fields = {...}
     local hostname, port = extract_hostname_for_cert_check(fields, "Certificate Validator")
     if not hostname then return end
     
-    if not curl_available then
-        show_error_window("curl Not Available", "curl is required for SSLChecker.com API.\n\nPlease install curl first.")
+    if not ensure_curl_checked() then
+        show_error_window("curl Not Available", "curl is required for crt.sh API.\n\nPlease install curl first.")
         return
     end
     
-    local data, err = check_certificate_sslchecker(hostname, port)
+    local data, err = check_certificate_crtsh(hostname)
     if err then
         -- Try OpenSSL fallback
         local openssl_available = check_openssl_available()
         if openssl_available then
-            log_message("SSLChecker.com failed, trying OpenSSL fallback...")
+            log_message("crt.sh failed, trying OpenSSL fallback...")
             data, err = check_certificate_openssl(hostname, port)
             if not err and data then
                 data.source = "OpenSSL (fallback)"
@@ -6956,6 +7066,9 @@ fso.DeleteFile "%s"
         return ""
     end
 end
+
+-- Make execute_silent available to OpenSSL certificate check (forward declared earlier)
+execute_silent_for_openssl = execute_silent
 
 -- Check which DNS tool is available (dig preferred, nslookup as fallback)
 -- Convert IP address to reverse DNS format for PTR queries
@@ -7272,7 +7385,7 @@ local function reverse_dns_lookup(ip)
     end
     
     -- Try Cloudflare DoH first (works cross-platform, no local tools needed)
-    if curl_available then
+    if ensure_curl_checked() then
         local reverse_name = ip_to_reverse_dns(ip)
         if reverse_name then
             log_message("Attempting Cloudflare DoH reverse DNS lookup for IP: " .. ip)
@@ -7397,7 +7510,7 @@ local function dns_lookup(domain, record_type)
     end
     
     -- Try Cloudflare DoH first (works cross-platform, no local tools needed)
-    if curl_available then
+    if ensure_curl_checked() then
         log_message("Attempting Cloudflare DoH DNS lookup for: " .. domain .. " (type: " .. record_type .. ")")
         local doh_result, doh_err = cloudflare_doh_query(domain, record_type)
         if not doh_err and doh_result then
