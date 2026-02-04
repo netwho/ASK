@@ -6435,81 +6435,81 @@ local function check_certificate_ssllabs(hostname, port)
     return result, nil
 end
 
--- SSLChecker.com API for quick certificate validation
-local function check_certificate_sslchecker(hostname, port)
-    port = port or 443
-    
+-- crt.sh API for certificate transparency lookup
+-- This provides historical certificate information from CT logs
+local function check_certificate_crtsh(hostname)
     -- Remove protocol prefix if present
     local domain = string.gsub(hostname, "^https?://", "")
     domain = string.gsub(domain, "^www%.", "")
     
-    log_message("Querying SSLChecker.com API for certificate: " .. domain)
+    log_message("Querying crt.sh for certificate: " .. domain)
     
-    -- SSLChecker.com API endpoint (no API key required, free service)
-    -- Note: This is an unofficial API endpoint based on their public service
-    local api_url = string.format("https://www.sslchecker.com/certcheck?host=%s&port=%d", domain, port)
+    -- crt.sh JSON API endpoint
+    local api_url = string.format("https://crt.sh/?q=%s&output=json", domain)
     
     -- Make HTTP GET request
     local response, err = http_get(api_url, {})
     if err then
-        return nil, "SSLChecker.com API query failed: " .. err
+        return nil, "crt.sh API query failed: " .. err
     end
     
     if not response or response == "" then
-        return nil, "Empty response from SSLChecker.com API"
+        return nil, "Empty response from crt.sh API"
     end
     
-    -- Parse JSON response
+    -- Parse JSON response (returns an array of certificates)
     local json_data = parse_json(response)
-    if not json_data then
-        -- If JSON parsing fails, fall back to OpenSSL
-        return nil, "Failed to parse SSLChecker.com API response"
+    if not json_data or type(json_data) ~= "table" then
+        return nil, "Failed to parse crt.sh API response"
     end
+    
+    if #json_data == 0 then
+        return nil, "No certificates found for " .. domain .. " in Certificate Transparency logs"
+    end
+    
+    -- Get the most recent certificate (first in list, sorted by not_before desc)
+    local cert = json_data[1]
     
     -- Extract certificate information
     local result = {}
     result.hostname = domain
-    result.port = port
-    result.source = "SSLChecker.com API"
+    result.port = 443
+    result.source = "crt.sh (Certificate Transparency)"
     
-    -- Map common fields
-    if json_data.subject then
-        result.subject = json_data.subject
+    if cert.common_name then
+        result.subject = cert.common_name
     end
     
-    if json_data.issuer then
-        result.issuer = json_data.issuer
+    if cert.issuer_name then
+        result.issuer = cert.issuer_name
     end
     
-    if json_data.valid_from or json_data.notBefore then
-        result.notBefore = json_data.valid_from or json_data.notBefore
+    if cert.not_before then
+        result.notBefore = cert.not_before
     end
     
-    if json_data.valid_to or json_data.notAfter or json_data.expires then
-        result.notAfter = json_data.valid_to or json_data.notAfter or json_data.expires
-    end
-    
-    if json_data.days_left or json_data.days_until_expiry then
-        result.daysUntilExpiry = tonumber(json_data.days_left or json_data.days_until_expiry)
-        result.isExpired = (result.daysUntilExpiry and result.daysUntilExpiry < 0) or false
-    end
-    
-    if json_data.serial or json_data.serialNumber then
-        result.serial = json_data.serial or json_data.serialNumber
-    end
-    
-    if json_data.algorithm or json_data.signature_algorithm then
-        result.algorithm = json_data.algorithm or json_data.signature_algorithm
-    end
-    
-    if json_data.san or json_data.sans then
-        local sans = json_data.san or json_data.sans
-        if type(sans) == "table" then
-            result.sans = table.concat(sans, ", ")
-        else
-            result.sans = sans
+    if cert.not_after then
+        result.notAfter = cert.not_after
+        -- Check if expired
+        local year, month, day = string.match(cert.not_after, "(%d+)-(%d+)-(%d+)")
+        if year then
+            local expiry_time = os.time({year=tonumber(year), month=tonumber(month), day=tonumber(day)})
+            local now = os.time()
+            result.isExpired = (expiry_time < now)
+            result.daysUntilExpiry = math.floor((expiry_time - now) / 86400)
         end
     end
+    
+    if cert.serial_number then
+        result.serial = cert.serial_number
+    end
+    
+    -- Include CT log info
+    result.ctLogId = cert.id
+    result.ctLogEntryTimestamp = cert.entry_timestamp
+    
+    -- Count total certificates found
+    result.totalCertsFound = #json_data
     
     return result, nil
 end
@@ -6686,12 +6686,16 @@ local function format_cert_validity_result(data, hostname)
         result = result .. "• Basic certificate validation\n"
         result = result .. "• Direct connection to server\n"
         result = result .. "• Fast, no external API dependencies\n\n"
-    elseif data.source == "SSLChecker.com API" then
+    elseif data.source == "crt.sh (Certificate Transparency)" then
         result = result .. "--- Data Source ---\n"
-        result = result .. "Method: SSLChecker.com API\n"
-        result = result .. "• Quick certificate validation\n"
-        result = result .. "• Basic security information\n"
-        result = result .. "• Free service, no API key required\n\n"
+        result = result .. "Method: crt.sh (Certificate Transparency Logs)\n"
+        result = result .. "• Shows certificates logged to CT logs\n"
+        result = result .. "• Historical certificate data\n"
+        result = result .. "• Free service, no API key required\n"
+        if data.totalCertsFound and data.totalCertsFound > 1 then
+            result = result .. "• Found " .. data.totalCertsFound .. " certificates for this domain\n"
+        end
+        result = result .. "\n"
     end
     
     result = result .. "Host: " .. (data.hostname or hostname or "unknown") .. "\n"
@@ -6940,23 +6944,23 @@ local function quick_cert_check_callback(...)
     show_result_window_with_buttons("Quick Certificate Check: " .. hostname, formatted, "Quick Certificate Check", hostname)
 end
 
--- 2. Certificate Validator (SSLChecker.com) - Middle ground
+-- 2. Certificate Validator (crt.sh - Certificate Transparency) - Shows certificate history
 local function cert_validator_callback(...)
     local fields = {...}
     local hostname, port = extract_hostname_for_cert_check(fields, "Certificate Validator")
     if not hostname then return end
     
     if not ensure_curl_checked() then
-        show_error_window("curl Not Available", "curl is required for SSLChecker.com API.\n\nPlease install curl first.")
+        show_error_window("curl Not Available", "curl is required for crt.sh API.\n\nPlease install curl first.")
         return
     end
     
-    local data, err = check_certificate_sslchecker(hostname, port)
+    local data, err = check_certificate_crtsh(hostname)
     if err then
         -- Try OpenSSL fallback
         local openssl_available = check_openssl_available()
         if openssl_available then
-            log_message("SSLChecker.com failed, trying OpenSSL fallback...")
+            log_message("crt.sh failed, trying OpenSSL fallback...")
             data, err = check_certificate_openssl(hostname, port)
             if not err and data then
                 data.source = "OpenSSL (fallback)"
