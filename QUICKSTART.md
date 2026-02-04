@@ -11,10 +11,14 @@
 
 # Linux
 ./installers/linux/install.sh
-
-# Windows (PowerShell)
-powershell -ExecutionPolicy Bypass -File installers/windows/install.ps1
 ```
+
+```cmd
+# Windows (use the batch file - works on network shares and with restricted policies)
+installers\windows\install.bat
+```
+
+> **Windows Note:** The `install.bat` wrapper automatically handles PowerShell execution policy restrictions. This is especially useful when running from network shares (UNC paths) or in corporate environments with restricted policies.
 
 **Option B: Manual Installation**
 ```bash
