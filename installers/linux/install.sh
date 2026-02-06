@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ASK (Analyst's Shark Knife) Installation Script for Linux
-# Version: 0.2.6
+# Version: 0.2.7
 
 set -e
 
 echo "=========================================="
 echo "ASK (Analyst's Shark Knife) Installer"
-echo "Version 0.2.6 - Linux"
+echo "Version 0.2.7 - Linux"
 echo "=========================================="
 echo ""
 
