@@ -1,9 +1,9 @@
 # ASK (Analyst's Shark Knife) Installation Script for Windows
-# Version: 0.2.6
+# Version: 0.2.7
 
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "ASK (Analyst's Shark Knife) Installer" -ForegroundColor Cyan
-Write-Host "Version 0.2.6 - Windows" -ForegroundColor Cyan
+Write-Host "Version 0.2.7 - Windows" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
