@@ -2,7 +2,7 @@
 
 # ASK (Analyst's Shark Knife)
 
-[![Version](https://img.shields.io/badge/version-0.2.6-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.7-blue.svg)](CHANGELOG.md)
 [![Status](https://img.shields.io/badge/status-initial%20public%20release-green.svg)](CHANGELOG.md)
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
 [![Wireshark](https://img.shields.io/badge/Wireshark-4.2%2B-1679A7.svg)](https://www.wireshark.org/)
@@ -13,7 +13,7 @@
 
 A comprehensive Wireshark Lua plugin suite for security analytics and IOC (Indicators of Compromise) research. Provides real-time threat intelligence lookups directly from Wireshark's packet context menu.
 
-> **✨ Version 0.2.6**: Certificate checking now uses SSLLabs API for comprehensive SSL/TLS security analysis! Get security grades (A+ to F), vulnerability detection (Heartbleed, POODLE, etc.), protocol support, and detailed certificate information. No OpenSSL dependency required.
+> **✨ Version 0.2.7**: Improved Shodan error handling for Community subscription users! Now displays helpful messages about subscription limitations instead of generic errors, with clear options for resolving issues.
 
 > **⚠️ Important**: Some features require external tools (nmap, dig, traceroute) and API keys. Please review the [Feature Matrix](#-feature-matrix) and check your platform's [installer documentation](installers/) before installation to ensure all dependencies are available.
 

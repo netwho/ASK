@@ -2,6 +2,23 @@
 
 All notable changes to ASK (Analyst's Shark Knife) will be documented in this file.
 
+## [0.2.7] - 2026-02-06
+
+### Shodan Subscription Error Handling
+
+#### Fixed
+- **Shodan 401 Unauthorized Handling** - Improved error handling for Shodan API responses when queries exceed Community subscription limits
+  - Plain text "401 Unauthorized" responses now display a helpful message instead of generic "Invalid Response Format" error
+  - Clear explanation of Shodan Community Membership ($49 one-time) limitations
+  - Lists what's included (basic IP lookups, 100 credits/month) vs. what requires higher tiers (advanced filters, bulk exports)
+  - Provides actionable options: simplify query, upgrade subscription, use InternetDB API, or use other ASK features
+
+#### Changed
+- **Version** - Updated ASK plugin version to 0.2.7 in main and installer Lua files
+- **User-Agent** - Updated all ASK User-Agent strings to `ASK-Wireshark-Plugin/0.2.7`
+- **Installer Banners** - Updated installer version banners for macOS, Linux, and Windows to 0.2.7
+- **Documentation** - Updated README version badge and version callouts to 0.2.7
+
 ## [0.2.6] - 2026-02-04
 
 ### Maintenance Release
